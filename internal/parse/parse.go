@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/Lazialize/sqldefkit/internal/lexer"
+	"github.com/Lazialize/sqldefkit/internal/pos"
 )
 
 // Kind classifies the DDL statement.
@@ -31,6 +32,35 @@ const (
 	KindAlterTable
 )
 
+// RefKind classifies how a dependency reference (Ref) was discovered,
+// which in turn determines its confidence level for diagnostics: Auto and
+// Directive are high-confidence (worth warning about if unresolved),
+// ViewScan is best-effort and deliberately not warned about (see
+// internal/bundle diagnostics).
+type RefKind int
+
+const (
+	// RefAuto is a REFERENCES target, an INDEX/TRIGGER "ON" target, or an
+	// ALTER TABLE target — all unambiguous, syntax-driven edges.
+	RefAuto RefKind = iota
+	// RefViewScan is an identifier following a top-level FROM/JOIN in a
+	// view/materialized view body — best-effort, prone to false
+	// positives (aliases, subqueries), so never warned about when
+	// unresolved.
+	RefViewScan
+	// RefDirective is a name listed in a `-- sqldefkit:require` comment
+	// directive.
+	RefDirective
+)
+
+// Ref is a single named reference (dependency) found within a statement,
+// carrying the exact source position of the name and how it was found.
+type Ref struct {
+	Name string
+	Pos  pos.Position
+	Kind RefKind
+}
+
 // Statement is the result of parsing one lexer.Statement.
 type Statement struct {
 	Kind Kind
@@ -38,9 +68,19 @@ type Statement struct {
 	// statement defines, or "" if it doesn't define a named object
 	// (e.g. KindOther).
 	Name string
+	// NamePos is the source position of Name's token (the first token of
+	// a schema-qualified name), valid only when Name != "".
+	NamePos pos.Position
 	// Deps holds normalized names this statement depends on (may
-	// reference objects not defined anywhere in the bundle).
+	// reference objects not defined anywhere in the bundle). Kept as a
+	// plain string slice for existing consumers (e.g. internal/graph);
+	// see DepRefs for the same information with positions and edge
+	// kinds attached.
 	Deps []string
+	// DepRefs holds one Ref per entry in Deps (same names, same order
+	// before deduplication would apply — DepRefs is not deduplicated,
+	// so a name referenced twice appears twice, once per occurrence).
+	DepRefs []Ref
 
 	// Source data carried through for bundling/diagnostics.
 	Text            string

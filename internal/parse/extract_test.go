@@ -17,7 +17,7 @@ func parseOne(t *testing.T, sql string, dialect lexer.Dialect) Statement {
 	if len(stmts) != 1 {
 		t.Fatalf("expected exactly 1 statement, got %d", len(stmts))
 	}
-	return Parse(stmts[0])
+	return Parse(stmts[0], "", nil)
 }
 
 func sorted(ss []string) []string {
