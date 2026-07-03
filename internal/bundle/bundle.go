@@ -25,6 +25,22 @@ const (
 	SQLite   = lexer.SQLite
 )
 
+// ParseDialect parses a dialect name ("postgres", "mysql", or "sqlite")
+// into a Dialect value, returning an error for any other value (including
+// the empty string).
+func ParseDialect(s string) (Dialect, error) {
+	switch s {
+	case "postgres":
+		return Postgres, nil
+	case "mysql":
+		return MySQL, nil
+	case "sqlite":
+		return SQLite, nil
+	default:
+		return 0, fmt.Errorf("unknown dialect %q (expected postgres, mysql, or sqlite)", s)
+	}
+}
+
 // DiscoverFiles recursively collects *.sql files under root, sorted
 // lexicographically by path relative to root. Hidden directories (name
 // starting with ".") are skipped entirely.
