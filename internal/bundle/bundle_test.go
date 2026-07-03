@@ -143,6 +143,39 @@ func TestBuild_DeterministicAcrossRuns(t *testing.T) {
 	}
 }
 
+// TestBuild_CRLFInputNormalized verifies that source files with CRLF line
+// endings (e.g. checked out on Windows with autocrlf) produce byte-identical
+// output to their LF equivalents: line endings are normalized to LF right
+// after reading, before lexing.
+func TestBuild_CRLFInputNormalized(t *testing.T) {
+	const usersLF = "-- users table\nCREATE TABLE users (\n\tid int PRIMARY KEY\n);\n"
+	const ordersLF = "CREATE TABLE orders (\n\tid int,\n\tuser_id int REFERENCES users(id)\n);\n"
+
+	lfDir := t.TempDir()
+	writeFile(t, lfDir, "orders.sql", ordersLF)
+	writeFile(t, lfDir, "users.sql", usersLF)
+
+	crlfDir := t.TempDir()
+	writeFile(t, crlfDir, "orders.sql", strings.ReplaceAll(ordersLF, "\n", "\r\n"))
+	writeFile(t, crlfDir, "users.sql", strings.ReplaceAll(usersLF, "\n", "\r\n"))
+
+	lfOut, err := Build(lfDir, Postgres, os.ReadFile)
+	if err != nil {
+		t.Fatalf("unexpected error (LF): %v", err)
+	}
+	crlfOut, err := Build(crlfDir, Postgres, os.ReadFile)
+	if err != nil {
+		t.Fatalf("unexpected error (CRLF): %v", err)
+	}
+
+	if string(lfOut) != string(crlfOut) {
+		t.Errorf("CRLF input produced different output\n--- LF ---\n%q\n--- CRLF ---\n%q", lfOut, crlfOut)
+	}
+	if strings.Contains(string(crlfOut), "\r") {
+		t.Errorf("output from CRLF input contains carriage returns: %q", crlfOut)
+	}
+}
+
 func TestBuild_NoTrailingSemicolonFileStillTerminated(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "a.sql", `CREATE TABLE a (id int)`) // no trailing ';'
