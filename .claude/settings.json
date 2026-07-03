@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go test:*)",
+      "Bash(go build:*)",
+      "Bash(go vet:*)",
+      "Bash(gofmt:*)",
+      "Bash(go run ./cmd/sqldefkit:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); if [ -n \"$f\" ] && [ \"${f##*.}\" = go ] && [ -f \"$f\" ]; then gofmt -w \"$f\"; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
