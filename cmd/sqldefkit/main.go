@@ -14,6 +14,7 @@ import (
 	"github.com/Lazialize/sqldefkit/internal/bundle"
 	"github.com/Lazialize/sqldefkit/internal/config"
 	"github.com/Lazialize/sqldefkit/internal/diag"
+	"github.com/Lazialize/sqldefkit/internal/lsp"
 )
 
 // version is overridable at build time via:
@@ -32,6 +33,7 @@ Commands:
 
 	bundle    bundle a directory of .sql files into one file
 	check     report diagnostics (errors and warnings) for a schema tree
+	lsp       run a Language Server Protocol server over stdio
 	version   print version and exit
 
 Use "sqldefkit <command> -h" for details on a specific command.
@@ -75,6 +77,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runBundle(rest, stdout, stderr)
 	case "check":
 		return runCheck(rest, stdout, stderr)
+	case "lsp":
+		return runLSP(rest, stderr)
 	case "version":
 		fmt.Fprintln(stdout, version)
 		return nil
@@ -180,6 +184,27 @@ func runCheck(args []string, stdout, stderr io.Writer) error {
 
 	if diag.HasError(diags) {
 		return errCheckFailed
+	}
+	return nil
+}
+
+// runLSP runs an LSP server on stdin/stdout, logging to stderr, until the
+// client sends "exit" or stdin closes. It takes no flags.
+func runLSP(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("sqldefkit lsp", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: sqldefkit lsp")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	server := lsp.NewServer(os.Stdin, os.Stdout, stderr)
+	code := server.Run()
+	if code != 0 {
+		os.Exit(code)
 	}
 	return nil
 }

@@ -28,6 +28,7 @@ Or download a prebuilt binary from the
 ```
 sqldefkit bundle [--config <path>] [--dir <path>] [--dialect <postgres|mysql|sqlite>] [-o <file>]
 sqldefkit check [--config <path>] [--dir <path>] [--dialect <postgres|mysql|sqlite>]
+sqldefkit lsp
 sqldefkit version
 ```
 
@@ -41,6 +42,8 @@ sqldefkit version
 For each of `--dir`, `--dialect`, and `-o`, precedence is: explicit flag > value from the config file > built-in default (`--dir` defaults to `.`, `-o` defaults to stdout). `--dialect` has no built-in default — it must come from a flag or the config file, or `bundle` fails with an error naming both options.
 
 `check` validates a schema tree and reports diagnostics without bundling anything; see [Checking a schema tree](#checking-a-schema-tree) below. It accepts the same `--config`/`--dir`/`--dialect` flags (with the same resolution precedence) as `bundle`.
+
+`lsp` runs a Language Server Protocol server over stdio; see [Editor integration (LSP)](#editor-integration-lsp) below.
 
 `sqldefkit version` prints the version and exits.
 
@@ -210,6 +213,39 @@ orders.sql:4:5: warning: unknown reference "ghost_table": not defined in this sc
 users.sql:1:14: error: duplicate definition of "users": first defined at other.sql:1:14, redefined at users.sql:1:14
 $ echo $?
 1
+```
+
+## Editor integration (LSP)
+
+`sqldefkit lsp` runs a Language Server Protocol server over stdio. It provides
+exactly two features:
+
+- **Diagnostics** — the same errors and warnings `sqldefkit check` reports
+  (parse errors, duplicate definitions, dependency cycles, unresolved
+  high-confidence references), published live as you edit.
+- **Go to definition** — jump from a table/view/etc. name (a reference or a
+  definition) to where it's defined.
+
+There's no hover, completion, or other functionality. A project is recognized
+the same way `bundle`/`check` discover one: by finding a `sqldefkit.yaml` (or
+`.yml`) above the open file, with a `dialect` set and the file located under
+its `schema_dir`. Files outside any such project get no diagnostics and no
+go-to-definition results.
+
+Any LSP-capable editor can use it by running `sqldefkit lsp` with the project
+root marked by `sqldefkit.yaml`/`sqldefkit.yml`. Minimal Neovim setup:
+
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "sql",
+  callback = function()
+    vim.lsp.start({
+      name = "sqldefkit",
+      cmd = { "sqldefkit", "lsp" },
+      root_dir = vim.fs.root(0, { "sqldefkit.yaml", "sqldefkit.yml" }),
+    })
+  end,
+})
 ```
 
 ## Limitations
