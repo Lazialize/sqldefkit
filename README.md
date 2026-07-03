@@ -26,13 +26,34 @@ Or download a prebuilt binary from the
 ## Usage
 
 ```
-sqldefkit --dir <path> --dialect <postgres|mysql|sqlite> [-o <file>] [--version]
+sqldefkit bundle [--config <path>] [--dir <path>] [--dialect <postgres|mysql|sqlite>] [-o <file>]
+sqldefkit version
 ```
 
-- `--dir` — root directory to scan recursively for `*.sql` files (default `.`). Directories whose name starts with `.` are skipped.
-- `--dialect` — required; one of `postgres`, `mysql`, `sqlite`.
+`bundle` is the main command:
+
+- `--config` — path to a `sqldefkit.yaml`/`sqldefkit.yml` config file. If omitted, sqldefkit discovers one by walking up from the current directory (see below). Not finding one is fine as long as `--dir`/`--dialect` are supplied via flags.
+- `--dir` — root directory to scan recursively for `*.sql` files. Directories whose name starts with `.` are skipped.
+- `--dialect` — one of `postgres`, `mysql`, `sqlite`.
 - `-o` — output file path (default: stdout).
-- `--version` — print version and exit.
+
+For each of `--dir`, `--dialect`, and `-o`, precedence is: explicit flag > value from the config file > built-in default (`--dir` defaults to `.`, `-o` defaults to stdout). `--dialect` has no built-in default — it must come from a flag or the config file, or `bundle` fails with an error naming both options.
+
+`sqldefkit version` prints the version and exits.
+
+### Config file (`sqldefkit.yaml`)
+
+A project can carry a `sqldefkit.yaml` (or `sqldefkit.yml` — having both in the same directory is an error) to make its dialect and schema layout self-describing instead of repeating flags on every invocation:
+
+```yaml
+dialect: postgres      # postgres | mysql | sqlite
+schema_dir: schema     # path to schema root, relative to this file's directory (absolute also allowed)
+out: bundled.sql       # default output path, relative to this file's directory; omit = stdout
+```
+
+All fields are optional, and unknown fields are rejected. `schema_dir` and `out`, when relative, are resolved against the directory containing the config file — not the current working directory — so `bundle` behaves the same regardless of where it's invoked from within the project.
+
+`sqldefkit bundle` (with no `--config`) searches for the config file starting at the current directory and walking upward to the filesystem root, stopping at the first match. This also means the config file doubles as a project-root marker: a future sqldefkit LSP server will use the same discovery walk from an open `.sql` file to locate the project root and its dialect.
 
 ### Worked example
 
@@ -65,7 +86,7 @@ CREATE TABLE users (
 references `users`. Running:
 
 ```sh
-sqldefkit --dir schema --dialect postgres
+sqldefkit bundle --dir schema --dialect postgres
 ```
 
 produces `users` before `orders`, regardless of file order:
@@ -96,14 +117,14 @@ schema from standard input via shell redirection, so the bundled output
 can be piped straight in:
 
 ```sh
-sqldefkit --dir schema --dialect postgres | psqldef -U user mydb --dry-run
-sqldefkit --dir schema --dialect postgres | psqldef -U user mydb --apply
+sqldefkit bundle --dir schema --dialect postgres | psqldef -U user mydb --dry-run
+sqldefkit bundle --dir schema --dialect postgres | psqldef -U user mydb --apply
 ```
 
 Or write it out first and inspect/version it before applying:
 
 ```sh
-sqldefkit --dir schema --dialect postgres -o schema.sql
+sqldefkit bundle --dir schema --dialect postgres -o schema.sql
 psqldef -U user mydb --dry-run < schema.sql
 psqldef -U user mydb --apply < schema.sql
 ```

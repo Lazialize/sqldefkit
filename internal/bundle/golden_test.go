@@ -16,7 +16,7 @@ import (
 //
 // To regenerate expected.sql after an intentional output format change:
 //
-//	go run ./cmd/sqldefkit --dir internal/bundle/testdata/golden/input \
+//	go run ./cmd/sqldefkit bundle --dir internal/bundle/testdata/golden/input \
 //		--dialect postgres -o internal/bundle/testdata/golden/expected.sql
 func TestBuild_Golden(t *testing.T) {
 	got, err := Build("testdata/golden/input", Postgres, os.ReadFile)

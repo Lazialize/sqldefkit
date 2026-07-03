@@ -36,6 +36,21 @@ func TestDiscoverFiles_SortedAndSkipsHidden(t *testing.T) {
 	}
 }
 
+func TestDiscoverFiles_IgnoresConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a.sql", "SELECT 1;")
+	writeFile(t, dir, "sqldefkit.yaml", "dialect: postgres\n")
+
+	files, err := DiscoverFiles(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"a.sql"}
+	if strings.Join(files, ",") != strings.Join(want, ",") {
+		t.Errorf("files = %v, want %v (sqldefkit.yaml must not be treated as a schema file)", files, want)
+	}
+}
+
 func TestDiscoverFiles_ErrorWhenNoneFound(t *testing.T) {
 	dir := t.TempDir()
 	_, err := DiscoverFiles(dir)
