@@ -30,9 +30,11 @@ const (
 	TokenComment
 )
 
-// Token is a lexical token with its source position (byte offset into the
-// statement's original text) and, for identifier-like tokens, the text
-// with surrounding quotes stripped (Value) versus the raw source text (Raw).
+// Token is a lexical token with its source position (byte offset,
+// relative to the start of its statement's Text — i.e. add
+// Statement.Start to get the offset into the original source passed to
+// Split) and, for identifier-like tokens, the text with surrounding
+// quotes stripped (Value) versus the raw source text (Raw).
 type Token struct {
 	Kind  TokenKind
 	Raw   string
@@ -47,11 +49,22 @@ type Statement struct {
 	// comments), trimmed of leading/trailing whitespace. It does not
 	// include the trailing semicolon.
 	Text string
+	// Start is the byte offset of Text[0] in the source text passed to
+	// Split. End is the byte offset just past the last byte of Text
+	// (i.e. Start+len(Text)), both relative to that same source text.
+	Start int
+	End   int
 	// LeadingComments holds comment text (verbatim, in source order)
 	// that immediately precedes the statement with no blank statement
 	// in between. Used to look for directives.
 	LeadingComments []string
+	// LeadingCommentStarts holds the byte offset (relative to the
+	// source text passed to Split, like Start/End above) of the first
+	// byte of each entry in LeadingComments, in the same order.
+	LeadingCommentStarts []int
 	// Tokens is the token stream for Text (comments and whitespace
-	// excluded), used by the parse package to find keywords.
+	// excluded), used by the parse package to find keywords. Token
+	// Start/End are relative to Text (add Statement.Start to get an
+	// offset into the original source).
 	Tokens []Token
 }

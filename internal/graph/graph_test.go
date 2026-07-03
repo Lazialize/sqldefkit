@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -98,6 +99,33 @@ func TestSort_CycleDetected(t *testing.T) {
 	}
 	if !strings.Contains(msg, "->") {
 		t.Errorf("cycle message = %q, expected arrow separators", msg)
+	}
+}
+
+// TestSort_CycleErrorIsStructured verifies Sort's error is a *CycleError
+// exposing the cycle's Nodes, not just a plain formatted error — callers
+// like internal/bundle.CheckDiagnostics rely on errors.As(err,
+// *CycleError) to find a position to attach the diagnostic to.
+func TestSort_CycleErrorIsStructured(t *testing.T) {
+	nodes := []Node{
+		{File: "a.sql", Index: 0, Name: "users", Deps: []string{"orders"}},
+		{File: "b.sql", Index: 0, Name: "orders", Deps: []string{"users"}},
+	}
+	_, err := Sort(nodes)
+	if err == nil {
+		t.Fatal("expected cycle error")
+	}
+	var cycleErr *CycleError
+	if !errors.As(err, &cycleErr) {
+		t.Fatalf("expected *CycleError, got %T", err)
+	}
+	if len(cycleErr.Nodes) == 0 {
+		t.Fatal("expected non-empty Nodes")
+	}
+	// Deterministic: smallest (File, Index) among the cycle's
+	// participants starts the path — here that's a.sql:users.
+	if cycleErr.Nodes[0].Name != "users" || cycleErr.Nodes[0].File != "a.sql" {
+		t.Errorf("first node = %+v, want a.sql:users", cycleErr.Nodes[0])
 	}
 }
 

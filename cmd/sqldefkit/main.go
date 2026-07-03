@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/Lazialize/sqldefkit/internal/bundle"
 	"github.com/Lazialize/sqldefkit/internal/config"
+	"github.com/Lazialize/sqldefkit/internal/diag"
 )
 
 // version is overridable at build time via:
@@ -29,10 +31,19 @@ Usage:
 Commands:
 
 	bundle    bundle a directory of .sql files into one file
+	check     report diagnostics (errors and warnings) for a schema tree
 	version   print version and exit
 
 Use "sqldefkit <command> -h" for details on a specific command.
 `
+
+// errCheckFailed is returned by runCheck when at least one error-severity
+// diagnostic was found, so main() exits 1. Diagnostics themselves (both
+// errors and warnings) are always written to stdout before this is
+// returned; the error carries no additional message since main() would
+// otherwise print a redundant "sqldefkit: ..." line after the diagnostic
+// listing.
+var errCheckFailed = errors.New("check found errors")
 
 func main() {
 	err := run(os.Args[1:], os.Stdout, os.Stderr)
@@ -42,6 +53,11 @@ func main() {
 	if errors.Is(err, flag.ErrHelp) {
 		// Already printed usage to stderr via FlagSet.
 		os.Exit(0)
+	}
+	if errors.Is(err, errCheckFailed) {
+		// check already wrote its diagnostics to stdout; nothing more to
+		// say, just exit nonzero.
+		os.Exit(1)
 	}
 	fmt.Fprintln(os.Stderr, "sqldefkit:", err)
 	os.Exit(1)
@@ -57,6 +73,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	switch cmd {
 	case "bundle":
 		return runBundle(rest, stdout, stderr)
+	case "check":
+		return runCheck(rest, stdout, stderr)
 	case "version":
 		fmt.Fprintln(stdout, version)
 		return nil
@@ -110,6 +128,60 @@ func runBundle(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	return os.WriteFile(dest, out, 0o644)
+}
+
+// runCheck implements the `check` subcommand: it loads and parses the
+// schema tree the same way `bundle` does, but instead of emitting bundled
+// SQL, it reports every diagnostic (duplicate definitions, dependency
+// cycles, lex/parse failures as errors; unresolved high-confidence
+// references as warnings) to stdout, one per line, sorted by
+// (file, line, col). It never fails fast: even if error-severity
+// diagnostics are present, every diagnostic is still listed. The command
+// exits 1 (via errCheckFailed) if any error-severity diagnostic was
+// found, 0 otherwise (including when there are warnings but no errors,
+// and when there's nothing to report at all).
+func runCheck(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("sqldefkit check", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	configPath := fs.String("config", "", "path to sqldefkit.yaml (default: discovered from the current directory upward)")
+	dir := fs.String("dir", "", "root directory to scan recursively for *.sql files (default \".\", or schema_dir from config)")
+	dialectFlag := fs.String("dialect", "", "SQL dialect: postgres, mysql, or sqlite (required, from flag or config)")
+
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: sqldefkit check [--config <path>] [--dir <path>] [--dialect <postgres|mysql|sqlite>]")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := resolveConfig(*configPath)
+	if err != nil {
+		return err
+	}
+
+	dialect, err := resolveDialect(*dialectFlag, cfg)
+	if err != nil {
+		return err
+	}
+
+	root := resolveDir(*dir, cfg)
+
+	diags, err := bundle.CheckDiagnostics(root, dialect, os.ReadFile)
+	if err != nil {
+		return err
+	}
+
+	for _, d := range diags {
+		fmt.Fprintf(stdout, "%s:%d:%d: %s: %s\n", filepath.ToSlash(d.Pos.File), d.Pos.Line, d.Pos.Col, d.Severity, d.Message)
+	}
+
+	if diag.HasError(diags) {
+		return errCheckFailed
+	}
+	return nil
 }
 
 // resolveConfig loads the config file explicitly named by configPath, or,

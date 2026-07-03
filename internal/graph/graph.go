@@ -90,11 +90,28 @@ func Sort(nodes []Node) ([]Node, error) {
 	}
 
 	if len(order) < len(nodes) {
-		cyclePath := findCycle(nodes, visited)
-		return nil, fmt.Errorf("dependency cycle detected: %s", cyclePath)
+		path := findCyclePath(nodes, visited)
+		return nil, &CycleError{Nodes: path}
 	}
 
 	return order, nil
+}
+
+// CycleError is returned by Sort when the graph contains a dependency
+// cycle. Nodes holds the cycle path in the same deterministic order
+// rendered by Error() (starting at the smallest (File, Index) among the
+// unresolved nodes, repeating that starting node at the end to close the
+// loop).
+type CycleError struct {
+	Nodes []Node
+}
+
+func (e *CycleError) Error() string {
+	parts := make([]string, len(e.Nodes))
+	for i, n := range e.Nodes {
+		parts[i] = fmt.Sprintf("%s:%s", n.File, n.Name)
+	}
+	return fmt.Sprintf("dependency cycle detected: %s", strings.Join(parts, " -> "))
 }
 
 type ready struct {
@@ -123,10 +140,12 @@ func (q *readyQueue) Pop() any {
 	return item
 }
 
-// findCycle locates one cycle among the not-yet-visited nodes (those with
-// remaining indegree > 0) and renders it as "file:name -> file:name ->
-// ... -> file:name" (repeating the starting node at the end).
-func findCycle(nodes []Node, visited []bool) string {
+// findCyclePath locates one cycle among the not-yet-visited nodes (those
+// with remaining indegree > 0) and returns it as a slice of Nodes in
+// dependency order (repeating the starting node at the end to close the
+// loop), starting deterministically from the smallest (File, Index)
+// among the unresolved nodes.
+func findCyclePath(nodes []Node, visited []bool) []Node {
 	remaining := make(map[int]bool)
 	for i := range nodes {
 		if !visited[i] {
@@ -134,7 +153,7 @@ func findCycle(nodes []Node, visited []bool) string {
 		}
 	}
 	if len(remaining) == 0 {
-		return "(unknown)"
+		return nil
 	}
 
 	// Rebuild forward edges (i -> j means i depends on j, i.e. j must
@@ -193,11 +212,11 @@ func findCycle(nodes []Node, visited []bool) string {
 		cur = next
 	}
 
-	parts := make([]string, len(path))
+	result := make([]Node, len(path))
 	for i, idx := range path {
-		parts[i] = fmt.Sprintf("%s:%s", nodes[idx].File, nodes[idx].Name)
+		result[i] = nodes[idx]
 	}
-	return strings.Join(parts, " -> ")
+	return result
 }
 
 func less(a, b Node) bool {

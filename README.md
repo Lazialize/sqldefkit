@@ -27,6 +27,7 @@ Or download a prebuilt binary from the
 
 ```
 sqldefkit bundle [--config <path>] [--dir <path>] [--dialect <postgres|mysql|sqlite>] [-o <file>]
+sqldefkit check [--config <path>] [--dir <path>] [--dialect <postgres|mysql|sqlite>]
 sqldefkit version
 ```
 
@@ -38,6 +39,8 @@ sqldefkit version
 - `-o` — output file path (default: stdout).
 
 For each of `--dir`, `--dialect`, and `-o`, precedence is: explicit flag > value from the config file > built-in default (`--dir` defaults to `.`, `-o` defaults to stdout). `--dialect` has no built-in default — it must come from a flag or the config file, or `bundle` fails with an error naming both options.
+
+`check` validates a schema tree and reports diagnostics without bundling anything; see [Checking a schema tree](#checking-a-schema-tree) below. It accepts the same `--config`/`--dir`/`--dialect` flags (with the same resolution precedence) as `bundle`.
 
 `sqldefkit version` prints the version and exits.
 
@@ -163,6 +166,51 @@ FROM orders;
 Names are normalized the same way automatically-detected names are (see
 below); multiple names may be listed space- or comma-separated, and
 directives may repeat.
+
+## Checking a schema tree
+
+`sqldefkit check` loads and parses a schema tree the same way `bundle`
+does, but instead of emitting bundled SQL it reports diagnostics — one
+line per issue, to stdout, sorted by file/line/column:
+
+```
+path/to/file.sql:line:col: error: message
+path/to/file.sql:line:col: warning: message
+```
+
+Paths are printed relative to the schema root, with forward slashes
+regardless of platform. If there's nothing to report, `check` prints
+nothing.
+
+Rules:
+
+- **error** — a lex/parse failure; a duplicate definition of the same
+  object name (reported at the later definition, naming the first
+  definition's location); a dependency cycle (reported once, at the
+  first participant in the cycle, showing the cycle path the same way
+  `bundle` does).
+- **warning** — a high-confidence reference (a `REFERENCES` target, an
+  `INDEX`/`TRIGGER` `ON` target, an `ALTER TABLE` target, or a name in a
+  `require` directive) that isn't defined anywhere in the schema tree.
+  Directive typos are a common source of these — a misspelled
+  `-- sqldefkit:require` name warns just like a misspelled `REFERENCES`
+  target. Best-effort view `FROM`/`JOIN` scanning is deliberately
+  excluded from this check: aliases and subqueries make it too prone to
+  false positives to be a useful warning.
+
+Exit code is 1 if any error-severity diagnostic was found, 0 otherwise —
+warnings alone don't fail the check.
+
+Example, given a schema with an undefined foreign key target and a
+duplicate table definition:
+
+```sh
+$ sqldefkit check --dir schema --dialect postgres
+orders.sql:4:5: warning: unknown reference "ghost_table": not defined in this schema
+users.sql:1:14: error: duplicate definition of "users": first defined at other.sql:1:14, redefined at users.sql:1:14
+$ echo $?
+1
+```
 
 ## Limitations
 

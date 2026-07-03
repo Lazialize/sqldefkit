@@ -9,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Lazialize/sqldefkit/internal/diag"
 	"github.com/Lazialize/sqldefkit/internal/graph"
 	"github.com/Lazialize/sqldefkit/internal/lexer"
-	"github.com/Lazialize/sqldefkit/internal/parse"
 )
 
 // Dialect mirrors lexer.Dialect for callers outside this package that
@@ -75,63 +75,27 @@ func DiscoverFiles(root string) ([]string, error) {
 	return files, nil
 }
 
-// statement is an internal record combining a parsed statement with its
-// source location, used to build the graph and emit output.
-type statement struct {
-	file  string
-	index int
-	ps    parse.Statement
-}
-
-// Build reads all .sql files under root (via DiscoverFiles), parses their
+// Build reads all .sql files under root (via Load), parses their
 // statements, orders them topologically, and returns the combined output
 // bytes ready to write to a file or stdout.
+//
+// Build preserves its historical fail-fast behavior on top of the shared
+// Load step: the first error-severity diagnostic (duplicate definition or
+// lex/parse failure) becomes the returned error, with the same message
+// text as before. Warnings (unresolved references) are not surfaced here
+// — use the `check` subcommand (internal/bundle.Load directly) to see
+// them.
 func Build(root string, dialect Dialect, readFile func(path string) ([]byte, error)) ([]byte, error) {
-	files, err := DiscoverFiles(root)
+	loaded, err := Load(root, dialect, readFile)
 	if err != nil {
 		return nil, err
 	}
 
-	var all []statement
-	definedAt := make(map[string]string) // name -> "file:index" of first definition
-
-	for _, rel := range files {
-		abs := filepath.Join(root, rel)
-		data, err := readFile(abs)
-		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", rel, err)
-		}
-		// Normalize CRLF to LF right after reading so output is
-		// deterministic (LF-only) regardless of the source files' line
-		// endings (e.g. CRLF checkouts on Windows).
-		src := strings.ReplaceAll(string(data), "\r\n", "\n")
-		stmts, err := lexer.Split(src, dialect)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", rel, err)
-		}
-		for i, st := range stmts {
-			ps := parse.Parse(st)
-			if ps.Name != "" {
-				loc := fmt.Sprintf("%s:%d", rel, i)
-				if prev, ok := definedAt[ps.Name]; ok {
-					return nil, fmt.Errorf("duplicate definition of %q: first defined at %s, redefined at %s", ps.Name, prev, loc)
-				}
-				definedAt[ps.Name] = loc
-			}
-			all = append(all, statement{file: rel, index: i, ps: ps})
-		}
+	if err := firstErrorDiagnostic(loaded.Diags); err != nil {
+		return nil, err
 	}
 
-	nodes := make([]graph.Node, len(all))
-	for i, s := range all {
-		nodes[i] = graph.Node{
-			File:  s.file,
-			Index: s.index,
-			Name:  s.ps.Name,
-			Deps:  s.ps.Deps,
-		}
-	}
-
+	nodes := loaded.graphNodes()
 	ordered, err := graph.Sort(nodes)
 	if err != nil {
 		return nil, err
@@ -140,14 +104,23 @@ func Build(root string, dialect Dialect, readFile func(path string) ([]byte, err
 	// Re-associate ordered graph.Node results back to their full
 	// statement (including text/comments) via (file, index) key, since
 	// graph.Node doesn't carry statement text.
-	byKey := make(map[string]statement, len(all))
-	for _, s := range all {
+	byKey := make(map[string]statement, len(loaded.Stmts))
+	for _, s := range loaded.Stmts {
 		byKey[key(s.file, s.index)] = s
 	}
 
 	return emit(ordered, byKey), nil
 }
 
-func key(file string, index int) string {
-	return fmt.Sprintf("%s\x00%d", file, index)
+// firstErrorDiagnostic returns an error built from the first error-severity
+// diagnostic in diags (which is sorted by position, so this is
+// deterministic), or nil if there are none. The message text matches
+// Build's pre-refactor wording so existing callers/tests aren't affected.
+func firstErrorDiagnostic(diags []diag.Diagnostic) error {
+	for _, d := range diags {
+		if d.Severity == diag.Error {
+			return fmt.Errorf("%s", d.Message)
+		}
+	}
+	return nil
 }

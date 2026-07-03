@@ -18,7 +18,9 @@ func Split(src string, dialect Dialect) ([]Statement, error) {
 	for {
 		s.skipInsignificant()
 		pendingComments := s.pendingComments
+		pendingCommentStarts := s.pendingCommentStarts
 		s.pendingComments = nil
+		s.pendingCommentStarts = nil
 
 		if s.pos >= len(s.src) {
 			// Only trailing comments/whitespace left; nothing to attach
@@ -127,13 +129,17 @@ func Split(src string, dialect Dialect) ([]Statement, error) {
 			// comments already collected: reattach them (in order)
 			// as pending for the next statement.
 			var carried []string
+			var carriedStarts []int
 			carried = append(carried, pendingComments...)
+			carriedStarts = append(carriedStarts, pendingCommentStarts...)
 			for _, t := range tokens {
 				if t.Kind == TokenComment {
 					carried = append(carried, t.Raw)
+					carriedStarts = append(carriedStarts, t.Start)
 				}
 			}
 			s.pendingComments = carried
+			s.pendingCommentStarts = carriedStarts
 			if s.pos >= len(s.src) {
 				break
 			}
@@ -159,9 +165,12 @@ func Split(src string, dialect Dialect) ([]Statement, error) {
 		}
 
 		statements = append(statements, Statement{
-			Text:            text,
-			LeadingComments: pendingComments,
-			Tokens:          relTokens,
+			Text:                 text,
+			Start:                base,
+			End:                  base + len(text),
+			LeadingComments:      pendingComments,
+			LeadingCommentStarts: pendingCommentStarts,
+			Tokens:               relTokens,
 		})
 	}
 
@@ -169,10 +178,11 @@ func Split(src string, dialect Dialect) ([]Statement, error) {
 }
 
 type scanner struct {
-	src             string
-	pos             int
-	dialect         Dialect
-	pendingComments []string
+	src                  string
+	pos                  int
+	dialect              Dialect
+	pendingComments      []string
+	pendingCommentStarts []int
 }
 
 func isSpace(c byte) bool {
@@ -193,8 +203,10 @@ func (s *scanner) skipInsignificant() {
 			continue
 		}
 		if consumed, comment, ok := s.peekComment(); ok {
+			start := s.pos
 			s.pos += consumed
 			s.pendingComments = append(s.pendingComments, comment)
+			s.pendingCommentStarts = append(s.pendingCommentStarts, start)
 			continue
 		}
 		break
