@@ -85,7 +85,11 @@ func Build(root string, dialect Dialect, readFile func(path string) ([]byte, err
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", rel, err)
 		}
-		stmts, err := lexer.Split(string(data), dialect)
+		// Normalize CRLF to LF right after reading so output is
+		// deterministic (LF-only) regardless of the source files' line
+		// endings (e.g. CRLF checkouts on Windows).
+		src := strings.ReplaceAll(string(data), "\r\n", "\n")
+		stmts, err := lexer.Split(src, dialect)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", rel, err)
 		}
