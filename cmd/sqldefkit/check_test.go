@@ -26,9 +26,12 @@ func TestRun_Check_DuplicateDefinition(t *testing.T) {
 	}
 }
 
+// TestRun_Check_Cycle uses a cycle closed by a directive edge (not a
+// foreign key), which stays a hard error: only FK-only cycles are
+// auto-split now (see TestRun_Check_FKCycleBreakableExitZero).
 func TestRun_Check_Cycle(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "a.sql"), "CREATE TABLE a (id int, b_id int REFERENCES b(id));")
+	writeFile(t, filepath.Join(dir, "a.sql"), "-- sqldefkit:require b\nCREATE TABLE a (id int);")
 	writeFile(t, filepath.Join(dir, "b.sql"), "CREATE TABLE b (id int, a_id int REFERENCES a(id));")
 
 	var stdout, stderr bytes.Buffer
@@ -39,6 +42,24 @@ func TestRun_Check_Cycle(t *testing.T) {
 	out := stdout.String()
 	if !strings.Contains(out, "error:") || !strings.Contains(out, "dependency cycle detected") {
 		t.Errorf("stdout = %q, want a dependency cycle error line", out)
+	}
+}
+
+// TestRun_Check_FKCycleBreakableExitZero verifies that a cycle made
+// entirely of foreign keys exits 0 with no output, since bundle now
+// splits it automatically instead of erroring.
+func TestRun_Check_FKCycleBreakableExitZero(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.sql"), "CREATE TABLE a (id int, b_id int REFERENCES b(id));")
+	writeFile(t, filepath.Join(dir, "b.sql"), "CREATE TABLE b (id int, a_id int REFERENCES a(id));")
+
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"check", "--dir", dir, "--dialect", "postgres"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("unexpected error (breakable FK cycle should exit 0): %v (stderr=%s)", err, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want empty output for a breakable FK cycle", stdout.String())
 	}
 }
 

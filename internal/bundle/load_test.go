@@ -151,9 +151,15 @@ func TestLoad_UnknownReferenceWarningOnlyForHighConfidence(t *testing.T) {
 	}
 }
 
+// TestCheckDiagnostics_CyclePositionAtFirstParticipant uses a cycle
+// closed by a directive edge (not a foreign key), so it stays an
+// unbreakable hard error exactly as before FK-cycle-splitting was added
+// (see TestCheckDiagnostics_FKCycleBreakableNoDiagnostic for the new
+// breakable case).
 func TestCheckDiagnostics_CyclePositionAtFirstParticipant(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "a.sql", `CREATE TABLE a (id int, b_id int REFERENCES b(id));`)
+	writeFile(t, dir, "a.sql", `-- sqldefkit:require b
+CREATE TABLE a (id int);`)
 	writeFile(t, dir, "b.sql", `CREATE TABLE b (id int, a_id int REFERENCES a(id));`)
 
 	diags, err := CheckDiagnostics(dir, Postgres, os.ReadFile)
@@ -175,6 +181,23 @@ func TestCheckDiagnostics_CyclePositionAtFirstParticipant(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected a cycle diagnostic, got %+v", diags)
+	}
+}
+
+// TestCheckDiagnostics_FKCycleBreakableNoDiagnostic verifies that a cycle
+// made entirely of foreign keys produces no diagnostic at all (silent
+// success), since bundle.Build now splits it automatically.
+func TestCheckDiagnostics_FKCycleBreakableNoDiagnostic(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a.sql", `CREATE TABLE a (id int, b_id int REFERENCES b(id));`)
+	writeFile(t, dir, "b.sql", `CREATE TABLE b (id int, a_id int REFERENCES a(id));`)
+
+	diags, err := CheckDiagnostics(dir, Postgres, os.ReadFile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(diags) != 0 {
+		t.Errorf("expected no diagnostics for a breakable FK cycle, got %+v", diags)
 	}
 }
 

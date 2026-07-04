@@ -128,14 +128,22 @@ func TestBuild_DuplicateDefinitionError(t *testing.T) {
 	}
 }
 
+// TestBuild_CycleError uses a cycle closed by a directive edge (not a
+// foreign key), which stays a hard error: only FK-only cycles are
+// auto-split (see fk_cycle_test.go for the breakable case, which used to
+// be exactly this fixture's shape before FK-cycle-splitting was added).
 func TestBuild_CycleError(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "a.sql", `CREATE TABLE a (id int, b_id int REFERENCES b(id));`)
+	writeFile(t, dir, "a.sql", `-- sqldefkit:require b
+CREATE TABLE a (id int);`)
 	writeFile(t, dir, "b.sql", `CREATE TABLE b (id int, a_id int REFERENCES a(id));`)
 
 	_, err := Build(dir, Postgres, os.ReadFile)
 	if err == nil {
 		t.Fatal("expected cycle error")
+	}
+	if !strings.Contains(err.Error(), "dependency cycle detected") {
+		t.Errorf("error = %v, want dependency cycle message", err)
 	}
 }
 
