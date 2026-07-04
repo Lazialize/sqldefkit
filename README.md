@@ -217,17 +217,21 @@ $ echo $?
 
 ## Editor integration (LSP)
 
-`sqldefkit lsp` runs a Language Server Protocol server over stdio. It provides
-exactly two features:
+`sqldefkit lsp` runs a Language Server Protocol server over stdio. It provides:
 
 - **Diagnostics** — the same errors and warnings `sqldefkit check` reports
   (parse errors, duplicate definitions, dependency cycles, unresolved
   high-confidence references), published live as you edit.
 - **Go to definition** — jump from a table/view/etc. name (a reference or a
   definition) to where it's defined.
+- **Hover** — hover a table/view/etc. name to see the statement that defines
+  it and the file it's defined in.
+- **Completion** — after `REFERENCES`, inside a `-- sqldefkit:require`
+  directive comment, or after `ON` in `CREATE INDEX`/`CREATE TRIGGER`, complete
+  defined object names.
 
-There's no hover, completion, or other functionality. A project is recognized
-the same way `bundle`/`check` discover one: by finding a `sqldefkit.yaml` (or
+A project is recognized the same way `bundle`/`check` discover one: by
+finding a `sqldefkit.yaml` (or
 `.yml`) above the open file, with a `dialect` set and the file located under
 its `schema_dir`. Files outside any such project get no diagnostics and no
 go-to-definition results.
