@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Lazialize/sqldefkit/internal/bundle"
 	"github.com/Lazialize/sqldefkit/internal/diag"
+	"github.com/Lazialize/sqldefkit/internal/parse"
 	"github.com/Lazialize/sqldefkit/internal/pos"
 )
 
@@ -116,6 +118,10 @@ func (s *Server) handleRequest(msg requestMessage) {
 		_ = s.w.writeResponse(msg.ID, struct{}{}, nil)
 	case "textDocument/definition":
 		s.handleDefinition(msg)
+	case "textDocument/hover":
+		s.handleHover(msg)
+	case "textDocument/completion":
+		s.handleCompletion(msg)
 	default:
 		_ = s.w.writeResponse(msg.ID, nil, &responseError{
 			Code:    codeMethodNotFound,
@@ -161,6 +167,8 @@ func (s *Server) handleInitialize(msg requestMessage) {
 				Change:    textDocumentSyncKindFull,
 			},
 			DefinitionProvider: true,
+			HoverProvider:      true,
+			CompletionProvider: completionOptions{},
 			PositionEncoding:   positionEncodingUTF16,
 		},
 		ServerInfo: serverInfo{Name: "sqldefkit"},
@@ -312,22 +320,59 @@ func (s *Server) handleDefinition(msg requestMessage) {
 		return
 	}
 
-	path, ok := uriToPath(params.TextDocument.URI)
+	pc, ok := s.resolvePositionContext(params.TextDocument.URI, params.Position)
 	if !ok {
 		_ = s.w.writeResponse(msg.ID, json.RawMessage("null"), nil)
 		return
+	}
+
+	def, ok := s.sess.findDefinition(pc.proj, pc.root, pc.path, pc.offset)
+	if !ok {
+		_ = s.w.writeResponse(msg.ID, json.RawMessage("null"), nil)
+		return
+	}
+
+	defAbsPath := filepath.Join(pc.root, def.File)
+	defContent, _ := s.sess.docContent(defAbsPath)
+	loc := location{
+		URI:   pathToURI(defAbsPath),
+		Range: rangeForPosition(defContent, def.Pos),
+	}
+	_ = s.w.writeResponse(msg.ID, loc, nil)
+}
+
+// positionContext bundles everything resolvePositionContext computes so
+// definition/hover/completion handlers don't each repeat the
+// URI-to-path/project-resolution/content-fetch/offset-computation
+// boilerplate.
+type positionContext struct {
+	path    string
+	proj    *project
+	root    string
+	content string
+	offset  int
+}
+
+// resolvePositionContext resolves uri to an absolute path, finds its
+// project, fetches its (overlay-aware) content, and converts pos (an LSP
+// Position, UTF-16) to a byte offset into that content. ok is false if any
+// step fails (unrecognized URI, no owning project, or content
+// unavailable), in which case callers should respond with a null/empty
+// result per this server's "no target -> null" convention.
+func (s *Server) resolvePositionContext(uri string, position lspPosition) (positionContext, bool) {
+	path, ok := uriToPath(uri)
+	if !ok {
+		return positionContext{}, false
 	}
 
 	proj, ok := s.sess.resolveProject(path)
 	if !ok {
-		_ = s.w.writeResponse(msg.ID, json.RawMessage("null"), nil)
-		return
+		return positionContext{}, false
 	}
 
 	content, ok := s.sess.docContent(path)
 	if !ok {
-		_ = s.w.writeResponse(msg.ID, json.RawMessage("null"), nil)
-		return
+		return positionContext{}, false
 	}
 
 	root := proj.cfg.SchemaDir
@@ -335,23 +380,166 @@ func (s *Server) handleDefinition(msg requestMessage) {
 		root = proj.cfg.Dir
 	}
 
-	lt := lineText(content, params.Position.Line+1)
-	byteCol := utf16ColToByteCol(lt, params.Position.Character)
-	offset := offsetForLineCol(content, params.Position.Line+1, byteCol)
+	lt := lineText(content, position.Line+1)
+	byteCol := utf16ColToByteCol(lt, position.Character)
+	offset := offsetForLineCol(content, position.Line+1, byteCol)
 
-	def, ok := s.sess.findDefinition(proj, root, path, offset)
+	return positionContext{path: path, proj: proj, root: root, content: content, offset: offset}, true
+}
+
+// handleHover answers textDocument/hover: cursor on a reference or
+// definition (same span-hit logic as go-to-definition, via
+// session.findDefinition) responds with the defining statement's verbatim
+// text (including attached leading comments) as a Markdown code block,
+// plus a "defined in <relative path>" line, and a range covering the
+// identifier under the cursor. Null if the cursor isn't on a known,
+// defined name.
+func (s *Server) handleHover(msg requestMessage) {
+	var params hoverParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		_ = s.w.writeResponse(msg.ID, nil, &responseError{Code: codeInvalidRequest, Message: "invalid params"})
+		return
+	}
+
+	pc, ok := s.resolvePositionContext(params.TextDocument.URI, params.Position)
 	if !ok {
 		_ = s.w.writeResponse(msg.ID, json.RawMessage("null"), nil)
 		return
 	}
 
-	defAbsPath := filepath.Join(root, def.File)
-	defContent, _ := s.sess.docContent(defAbsPath)
-	loc := location{
-		URI:   pathToURI(defAbsPath),
-		Range: rangeForPosition(defContent, def.Pos),
+	def, ok := s.sess.findDefinition(pc.proj, pc.root, pc.path, pc.offset)
+	if !ok {
+		_ = s.w.writeResponse(msg.ID, json.RawMessage("null"), nil)
+		return
 	}
-	_ = s.w.writeResponse(msg.ID, loc, nil)
+
+	text, ok := statementTextAt(pc.root, def, pc.proj.cfg.Dialect, s.sess.docContent)
+	if !ok {
+		_ = s.w.writeResponse(msg.ID, json.RawMessage("null"), nil)
+		return
+	}
+
+	relPath := filepath.ToSlash(def.File)
+	value := "```sql\n" + text + "\n```\ndefined in " + relPath
+
+	result := hoverResult{
+		Contents: markupContent{Kind: markupKindMarkdown, Value: value},
+		Range:    rangeForPosition(pc.content, hoverIdentifierPos(pc.content, pc.offset)),
+	}
+	_ = s.w.writeResponse(msg.ID, result, nil)
+}
+
+// hoverIdentifierPos builds a pos.Position for the identifier span
+// containing offset in content, for reuse with rangeForPosition (which
+// expects a pos.Position and derives the range's end from
+// identifierSpan(content, p.Offset) itself; only File/Offset/Line/Col need
+// to be populated).
+func hoverIdentifierPos(content string, offset int) pos.Position {
+	lm := pos.NewLineMap(content)
+	return lm.Pos("", offset)
+}
+
+// handleCompletion answers textDocument/completion: detects one of the
+// three supported contexts (REFERENCES target, require-directive name, or
+// CREATE INDEX/TRIGGER ... ON target) by scanning the current buffer
+// backward from the cursor, then returns matching defined-object names as
+// completion items (empty list, not null, outside those contexts).
+func (s *Server) handleCompletion(msg requestMessage) {
+	var params completionParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		_ = s.w.writeResponse(msg.ID, nil, &responseError{Code: codeInvalidRequest, Message: "invalid params"})
+		return
+	}
+
+	empty := completionList{IsIncomplete: false, Items: []completionItem{}}
+
+	pc, ok := s.resolvePositionContext(params.TextDocument.URI, params.Position)
+	if !ok {
+		_ = s.w.writeResponse(msg.ID, empty, nil)
+		return
+	}
+
+	symbols := s.sess.symbolsFor(pc.proj)
+	if symbols == nil {
+		_ = s.w.writeResponse(msg.ID, empty, nil)
+		return
+	}
+
+	ctx := detectCompletionContext(pc.content, pc.offset)
+	if ctx.Kind == completionContextNone {
+		_ = s.w.writeResponse(msg.ID, empty, nil)
+		return
+	}
+
+	tablesOnly := ctx.Kind == completionContextReferences || ctx.Kind == completionContextOn
+	items := completionItemsForNames(symbols, ctx.Prefix, tablesOnly)
+	_ = s.w.writeResponse(msg.ID, completionList{IsIncomplete: false, Items: items}, nil)
+}
+
+// completionItemsForNames builds the sorted, prefix-filtered completion
+// item list for a completion request: one item per defined name in
+// symbols matching prefix case-insensitively (prefix match only, no
+// fuzzy), restricted to KindCreateTable definitions if tablesOnly.
+func completionItemsForNames(symbols *bundle.Symbols, prefix string, tablesOnly bool) []completionItem {
+	lowerPrefix := strings.ToLower(prefix)
+	items := make([]completionItem, 0, len(symbols.Definitions))
+	for _, name := range symbols.DefinitionNames() {
+		def, ok := symbols.FirstDefinition(name)
+		if !ok {
+			continue
+		}
+		if tablesOnly && def.Kind != parse.KindCreateTable {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(name), lowerPrefix) {
+			continue
+		}
+		items = append(items, completionItem{
+			Label:      name,
+			Kind:       completionKindFor(def.Kind),
+			Detail:     kindLabel(def.Kind) + " — " + filepath.Base(def.File),
+			InsertText: name,
+			FilterText: name,
+		})
+	}
+	return items
+}
+
+// completionKindFor maps a parse.Kind to an LSP CompletionItemKind: tables
+// (and anything else) use Class (7); views specifically use Struct (22) to
+// visually distinguish them in client UIs that render kind icons.
+func completionKindFor(k parse.Kind) int {
+	if k == parse.KindCreateView {
+		return completionItemKindStruct
+	}
+	return completionItemKindClass
+}
+
+// kindLabel renders a parse.Kind as the short lowercase word used in a
+// completion item's Detail field (e.g. "table — users.sql").
+func kindLabel(k parse.Kind) string {
+	switch k {
+	case parse.KindCreateTable:
+		return "table"
+	case parse.KindCreateView:
+		return "view"
+	case parse.KindCreateIndex:
+		return "index"
+	case parse.KindCreateFunction:
+		return "function"
+	case parse.KindCreateTrigger:
+		return "trigger"
+	case parse.KindCreateType:
+		return "type"
+	case parse.KindCreateSequence:
+		return "sequence"
+	case parse.KindCreateExtension:
+		return "extension"
+	case parse.KindAlterTable:
+		return "table"
+	default:
+		return "object"
+	}
 }
 
 // offsetForLineCol computes the byte offset within content of (line,

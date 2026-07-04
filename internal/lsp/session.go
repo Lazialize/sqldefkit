@@ -11,6 +11,7 @@ import (
 	"github.com/Lazialize/sqldefkit/internal/bundle"
 	"github.com/Lazialize/sqldefkit/internal/config"
 	"github.com/Lazialize/sqldefkit/internal/diag"
+	"github.com/Lazialize/sqldefkit/internal/lexer"
 )
 
 // document is one open (or previously open) text document tracked by the
@@ -295,25 +296,52 @@ func (s *session) runProject(proj *project) diagnosticsResult {
 // in proj.symbols whose name-span (computed via identifierSpan against
 // that occurrence's own file content) contains byteOffset, then returns
 // the first Definition recorded for that name.
+//
+// This is the shared lookup behind both textDocument/definition and
+// textDocument/hover: both need "what name is under the cursor, and where
+// is it defined" — hover additionally wants the defining statement's text,
+// fetched separately via statementTextAt.
 func (s *session) findDefinition(proj *project, root, absPath string, byteOffset int) (bundle.Definition, bool) {
+	_, def, ok := s.resolveSymbolAt(proj, root, absPath, byteOffset)
+	return def, ok
+}
+
+// symbolsFor returns proj's most recently computed symbol index (nil if
+// none yet), guarded by the session lock like every other access to
+// project fields the session mutates concurrently with the message loop.
+func (s *session) symbolsFor(proj *project) *bundle.Symbols {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return proj.symbols
+}
+
+// resolveSymbolAt is like findDefinition but also returns the resolved
+// name itself (hover needs nothing beyond the Definition today, but
+// returning the name keeps this the single place that implements
+// "what's under the cursor" span-hit logic for both features).
+func (s *session) resolveSymbolAt(proj *project, root, absPath string, byteOffset int) (name string, def bundle.Definition, ok bool) {
 	s.mu.Lock()
 	symbols := proj.symbols
 	s.mu.Unlock()
 	if symbols == nil {
-		return bundle.Definition{}, false
+		return "", bundle.Definition{}, false
 	}
 
 	rel, err := filepath.Rel(root, absPath)
 	if err != nil {
-		return bundle.Definition{}, false
+		return "", bundle.Definition{}, false
 	}
 	rel = filepath.ToSlash(rel)
 
-	name, ok := symbolNameAt(s, symbols, root, rel, byteOffset)
+	name, ok = symbolNameAt(s, symbols, root, rel, byteOffset)
 	if !ok {
-		return bundle.Definition{}, false
+		return "", bundle.Definition{}, false
 	}
-	return symbols.FirstDefinition(name)
+	def, ok = symbols.FirstDefinition(name)
+	if !ok {
+		return name, bundle.Definition{}, false
+	}
+	return name, def, true
 }
 
 // symbolNameAt scans every Definition and Reference in symbols that is
@@ -356,6 +384,44 @@ func symbolNameAt(s *session, symbols *bundle.Symbols, root, rel string, byteOff
 func fileContentForRoot(s *session, root, rel string) (string, bool) {
 	abs := filepath.Join(root, rel)
 	return s.docContent(abs)
+}
+
+// statementTextAt returns the verbatim source text of the statement
+// defining def (its attached leading comments, if any, through its own
+// body), re-lexing def's file's current (overlay-aware) content and
+// locating the statement whose body contains def.Pos.Offset. Trailing
+// whitespace is trimmed; leading comments (if present) are included
+// exactly as written, along with whatever separates them from the
+// statement body, since lexer.Statement doesn't otherwise expose a single
+// "full text including comments" field.
+//
+// dialect must match the project's configured dialect so comment/string
+// syntax is lexed the same way Load did when producing def.
+func statementTextAt(root string, def bundle.Definition, dialect lexer.Dialect, docContent func(string) (string, bool)) (string, bool) {
+	abs := filepath.Join(root, def.File)
+	content, ok := docContent(abs)
+	if !ok {
+		return "", false
+	}
+
+	stmts, err := lexer.Split(content, dialect)
+	if err != nil {
+		return "", false
+	}
+
+	offset := def.Pos.Offset
+	for _, st := range stmts {
+		if offset < st.Start || offset >= st.End {
+			continue
+		}
+		start := st.Start
+		if len(st.LeadingCommentStarts) > 0 {
+			start = st.LeadingCommentStarts[0]
+		}
+		text := content[start:st.End]
+		return strings.TrimRight(text, " \t\r\n\v\f"), true
+	}
+	return "", false
 }
 
 // spanContains reports whether byteOffset falls within the identifier

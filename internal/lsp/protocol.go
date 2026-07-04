@@ -2,8 +2,9 @@ package lsp
 
 // This file defines the small subset of LSP JSON structures actually used
 // by this server: initialize/initialized, didOpen/didChange/didSave/
-// didClose, publishDiagnostics, and textDocument/definition. Field sets
-// are intentionally partial (only what we read or write), per the "no
+// didClose, publishDiagnostics, textDocument/definition,
+// textDocument/hover, and textDocument/completion. Field sets are
+// intentionally partial (only what we read or write), per the "no
 // over-implementing" goal.
 
 // position is an LSP Position: 0-based line, UTF-16-code-unit character.
@@ -73,6 +74,60 @@ type definitionParams struct {
 	Position     lspPosition            `json:"position"`
 }
 
+// hoverParams is textDocument/hover's params (TextDocumentPositionParams).
+type hoverParams struct {
+	TextDocument textDocumentIdentifier `json:"textDocument"`
+	Position     lspPosition            `json:"position"`
+}
+
+// markupContent is an LSP MarkupContent value (used for Hover.Contents).
+type markupContent struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
+// hoverResult is the result of textDocument/hover.
+type hoverResult struct {
+	Contents markupContent `json:"contents"`
+	Range    lspRange      `json:"range"`
+}
+
+const markupKindMarkdown = "markdown"
+
+// completionParams is textDocument/completion's params
+// (TextDocumentPositionParams; we don't need the optional CompletionContext).
+type completionParams struct {
+	TextDocument textDocumentIdentifier `json:"textDocument"`
+	Position     lspPosition            `json:"position"`
+}
+
+// completionItem is an LSP CompletionItem (the partial field set this
+// server populates).
+type completionItem struct {
+	Label      string `json:"label"`
+	Kind       int    `json:"kind,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	InsertText string `json:"insertText,omitempty"`
+	FilterText string `json:"filterText,omitempty"`
+}
+
+// completionList is the result of textDocument/completion.
+type completionList struct {
+	IsIncomplete bool             `json:"isIncomplete"`
+	Items        []completionItem `json:"items"`
+}
+
+// LSP CompletionItemKind values actually used here.
+const (
+	completionItemKindClass  = 7
+	completionItemKindStruct = 22
+)
+
+// completionOptions advertises completion support with no trigger
+// characters (clients request completion on manual invoke or their own
+// word-boundary heuristics; a space trigger would fire constantly).
+type completionOptions struct{}
+
 // location is an LSP Location (URI + Range).
 type location struct {
 	URI   string   `json:"uri"`
@@ -114,10 +169,12 @@ type textDocumentSyncOptions struct {
 const textDocumentSyncKindFull = 1
 
 // serverCapabilities is the (partial) ServerCapabilities we advertise:
-// full-document sync and go-to-definition only.
+// full-document sync, go-to-definition, hover, and completion.
 type serverCapabilities struct {
 	TextDocumentSync   textDocumentSyncOptions `json:"textDocumentSync"`
 	DefinitionProvider bool                    `json:"definitionProvider"`
+	HoverProvider      bool                    `json:"hoverProvider"`
+	CompletionProvider completionOptions       `json:"completionProvider"`
 	// PositionEncoding pins the encoding explicitly to utf-16, which is
 	// the LSP default; stated here for clarity even though omitting it
 	// would mean the same thing.
