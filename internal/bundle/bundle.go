@@ -95,6 +95,11 @@ func Build(root string, dialect Dialect, readFile func(path string) ([]byte, err
 		return nil, err
 	}
 
+	loaded, err = breakFKCycles(loaded, dialect)
+	if err != nil {
+		return nil, err
+	}
+
 	nodes := loaded.graphNodes()
 	ordered, err := graph.Sort(nodes)
 	if err != nil {
@@ -102,11 +107,11 @@ func Build(root string, dialect Dialect, readFile func(path string) ([]byte, err
 	}
 
 	// Re-associate ordered graph.Node results back to their full
-	// statement (including text/comments) via (file, index) key, since
-	// graph.Node doesn't carry statement text.
+	// statement (including text/comments) via (file, index, subIndex)
+	// key, since graph.Node doesn't carry statement text.
 	byKey := make(map[string]statement, len(loaded.Stmts))
 	for _, s := range loaded.Stmts {
-		byKey[key(s.file, s.index)] = s
+		byKey[keySub(s.file, s.index, s.subIndex)] = s
 	}
 
 	return emit(ordered, byKey), nil

@@ -152,6 +152,95 @@ Edges are extracted as follows:
 - **`CREATE INDEX`** / **`CREATE TRIGGER`**: depends on the table named after `ON`.
 - **`CREATE VIEW`** / **`CREATE MATERIALIZED VIEW`**: depends on tables/views named directly after a top-level `FROM` or `JOIN` (best-effort — see limitations).
 
+### Dependency cycles (mutually-referencing tables)
+
+Two tables that reference each other via foreign keys are legal SQL — the
+usual pattern is to create both tables first, then add the constraints
+afterward via `ALTER TABLE` — so sqldefkit automatically splits a
+dependency cycle when it can be sure doing so is safe:
+
+```sql
+-- orders.sql
+CREATE TABLE orders (
+    id serial PRIMARY KEY,
+    user_id integer NOT NULL REFERENCES users (id)
+);
+```
+
+```sql
+-- users.sql
+CREATE TABLE users (
+    id serial PRIMARY KEY,
+    email text NOT NULL UNIQUE,
+    favorite_order_id integer REFERENCES orders (id)
+);
+```
+
+`orders` and `users` reference each other, forming a cycle. Instead of
+failing, `bundle` extracts each foreign key that closes the cycle out of
+its `CREATE TABLE` and emits it as a separate `ALTER TABLE ... ADD ...`
+statement, sorted after both tables involved:
+
+```sql
+CREATE TABLE orders (
+    id serial PRIMARY KEY,
+    user_id integer NOT NULL
+);
+
+CREATE TABLE users (
+    id serial PRIMARY KEY,
+    email text NOT NULL UNIQUE,
+    favorite_order_id integer
+);
+
+-- fk constraint moved by sqldefkit to break a dependency cycle (from orders.sql)
+ALTER TABLE orders ADD FOREIGN KEY (user_id) REFERENCES users (id);
+
+-- fk constraint moved by sqldefkit to break a dependency cycle (from users.sql)
+ALTER TABLE users ADD FOREIGN KEY (favorite_order_id) REFERENCES orders (id);
+```
+
+This applies to both table-level (`[CONSTRAINT name] FOREIGN KEY (...)
+REFERENCES ...`) and inline column-level (`col type REFERENCES ...`)
+foreign keys, and to longer cycles (A → B → C → A) as well as two-table
+ones. The extraction is conservative: it only rewrites what it can
+identify from the token stream with certainty (never a regex-over-text
+guess), so it can never corrupt a constraint it doesn't fully
+understand.
+
+For the **sqlite** dialect, FK cycles are recognized the same way but
+the constraints are left inline and no `ALTER TABLE` is synthesized:
+SQLite both lacks `ALTER TABLE ... ADD FOREIGN KEY` and permits forward
+references (foreign keys resolve at DML time, so a `CREATE TABLE` may
+legally reference a table that doesn't exist yet) — the tables are
+simply emitted verbatim in deterministic order.
+
+A cycle is still a hard error, exactly as before, when:
+
+- **it isn't made entirely of foreign keys** — a cycle closed by a view's
+  `FROM`/`JOIN`, a `require` directive, an `INDEX`/`TRIGGER`'s `ON`
+  target, or an `ALTER TABLE` target can't be split (there's no
+  equivalent "declare now, constrain later" move for those), so it
+  reports the same `dependency cycle detected: ...` message as always.
+- **a foreign key in the cycle can't be extracted with certainty** — an
+  unrecognized construct around a `REFERENCES` clause falls back to the
+  same cycle error, with one added sentence pointing at the fix: move the
+  constraint to a table-level `CONSTRAINT ... FOREIGN KEY` clause or an
+  explicit `ALTER TABLE`.
+
+`sqldefkit check` and the LSP treat a breakable cycle as a complete
+non-issue (no diagnostic at all, since `bundle` will handle it), and an
+unbreakable one exactly as they always have.
+
+**MySQL note:** an inline column-level `REFERENCES` (e.g. `user_id int
+REFERENCES users(id)`) is accepted by MySQL's grammar but silently
+ignored by InnoDB — it does not actually create a foreign key constraint.
+sqldefkit extracts it the same way it does everywhere else, which means
+the resulting `ALTER TABLE ... ADD FOREIGN KEY ...` in the bundled output
+*does* create a real, enforced constraint under InnoDB. If that inline
+form was being relied on as a no-op, splitting the cycle changes runtime
+behavior, not just formatting.
+
 ### The `require` directive
 
 Some dependencies aren't recognizable from the patterns above — most
@@ -189,9 +278,12 @@ Rules:
 
 - **error** — a lex/parse failure; a duplicate definition of the same
   object name (reported at the later definition, naming the first
-  definition's location); a dependency cycle (reported once, at the
-  first participant in the cycle, showing the cycle path the same way
-  `bundle` does).
+  definition's location); a dependency cycle that `bundle` can't split
+  automatically (reported once, at the first participant in the cycle,
+  showing the cycle path the same way `bundle` does — see [Dependency
+  cycles](#dependency-cycles-mutually-referencing-tables) for which
+  cycles those are). A cycle `bundle` *can* split automatically produces
+  no diagnostic at all.
 - **warning** — a high-confidence reference (a `REFERENCES` target, an
   `INDEX`/`TRIGGER` `ON` target, an `ALTER TABLE` target, or a name in a
   `require` directive) that isn't defined anywhere in the schema tree.
