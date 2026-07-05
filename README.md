@@ -369,14 +369,101 @@ digraph dependencies {
 
 `--format json` produces the same versioned payload the
 `sqldefkit/dependencyGraph` LSP request returns (see below): a `version`
-field, an array of `nodes` (`id`, `kind`, `file`/`line`/`col` when
-defined in the schema, `external`/`unknown` for a high-confidence
-reference to a name that isn't, `inCycle`), and an array of `edges`
-(`from`, `to`, `kind` — one of `fk`, `on`, `view`, `directive`, `alter`
-— and `inCycle`). A best-effort view `FROM`/`JOIN` reference to an
+field (currently `2`), an array of `nodes` (`id`, `kind`,
+`file`/`line`/`col` when defined in the schema, `external`/`unknown` for a
+high-confidence reference to a name that isn't, `inCycle`), and an array of
+`edges` (`from`, `to`, `kind` — one of `fk`, `on`, `view`, `directive`,
+`alter` — and `inCycle`). A best-effort view `FROM`/`JOIN` reference to an
 undefined name is dropped entirely rather than turned into an external
 node, matching `check`'s treatment of the same case (see
 [Checking a schema tree](#checking-a-schema-tree)).
+
+A table node also carries its ordered `columns` (name, verbatim `type`,
+and `pk`/`notNull`/`unique`/`fk` flags — booleans omitted when false), and
+an `fk` edge carries `fromColumn`/`toColumn` naming the specific columns it
+connects when known, so a column-level ER rendering can anchor edges to
+the right rows instead of the table as a whole. Given
+
+```sql
+CREATE TABLE users (
+	id int PRIMARY KEY,
+	email text UNIQUE
+);
+CREATE TABLE orders (
+	id int PRIMARY KEY,
+	user_id int NOT NULL REFERENCES users (id)
+);
+```
+
+`--format json` produces:
+
+```json
+{
+  "version": 2,
+  "nodes": [
+    {
+      "id": "orders",
+      "kind": "table",
+      "file": "orders.sql",
+      "line": 1,
+      "col": 14,
+      "columns": [
+        {
+          "name": "id",
+          "type": "int",
+          "pk": true,
+          "notNull": true
+        },
+        {
+          "name": "user_id",
+          "type": "int",
+          "notNull": true,
+          "fk": {
+            "table": "users",
+            "column": "id"
+          }
+        }
+      ]
+    },
+    {
+      "id": "users",
+      "kind": "table",
+      "file": "users.sql",
+      "line": 1,
+      "col": 14,
+      "columns": [
+        {
+          "name": "id",
+          "type": "int",
+          "pk": true,
+          "notNull": true
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "unique": true
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "orders",
+      "to": "users",
+      "kind": "fk",
+      "inCycle": false,
+      "fromColumn": "user_id",
+      "toColumn": "id"
+    }
+  ]
+}
+```
+
+`--format dot`/`--format mermaid` stay object-level and are unaffected by
+column data: two FK columns on the same table pointing at the same target
+table produce two `edges` entries in the JSON payload (one per source
+column) but still collapse to a single line in the DOT/Mermaid output,
+matching their pre-column-support rendering.
 
 ## Editor integration (LSP)
 

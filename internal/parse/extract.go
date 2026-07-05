@@ -24,6 +24,7 @@ func Parse(stmt lexer.Statement, file string, fileLineMap *pos.LineMap) Statemen
 	out := Statement{
 		Text:            stmt.Text,
 		LeadingComments: stmt.LeadingComments,
+		Tokens:          stmt.Tokens,
 	}
 
 	lm := fileLineMap

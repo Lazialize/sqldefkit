@@ -61,6 +61,35 @@ func edgeStyle(kind string) string {
 	}
 }
 
+// dedupeObjectLevel collapses g.Edges to one entry per (From, To, Kind),
+// discarding FromColumn/ToColumn, for consumers (DOT, Mermaid) that only
+// ever drew one line per object-level relationship — v2's per-column edge
+// granularity (see Graph's Version doc comment) must not change their
+// output. InCycle is true in the result if it was true for any collapsed
+// edge. Order is first-occurrence order, which is stable since g.Edges is
+// already sorted by (From, To, Kind) — so all edges sharing a key are
+// already adjacent.
+func dedupeObjectLevel(edges []Edge) []Edge {
+	type key struct{ from, to, kind string }
+	seen := make(map[key]int, len(edges))
+	out := make([]Edge, 0, len(edges))
+	for _, e := range edges {
+		k := key{e.From, e.To, e.Kind}
+		if idx, ok := seen[k]; ok {
+			if e.InCycle {
+				out[idx].InCycle = true
+			}
+			continue
+		}
+		seen[k] = len(out)
+		collapsed := e
+		collapsed.FromColumn = ""
+		collapsed.ToColumn = ""
+		out = append(out, collapsed)
+	}
+	return out
+}
+
 // dotQuote quotes s as a DOT identifier/string literal (double-quoted,
 // with internal double quotes and backslashes escaped).
 func dotQuote(s string) string {
@@ -103,7 +132,7 @@ func FormatDOT(g Graph) []byte {
 		fmt.Fprintf(&b, "  %s [%s];\n", dotQuote(n.ID), strings.Join(attrs, ", "))
 	}
 
-	for _, e := range g.Edges {
+	for _, e := range dedupeObjectLevel(g.Edges) {
 		attrs := []string{
 			fmt.Sprintf("label=%s", dotQuote(e.Kind)),
 			fmt.Sprintf("style=%s", edgeStyle(e.Kind)),
@@ -176,8 +205,9 @@ func FormatMermaid(g Graph) []byte {
 		}
 	}
 
+	dedupedEdges := dedupeObjectLevel(g.Edges)
 	var cycleLinkStyles []int
-	for i, e := range g.Edges {
+	for i, e := range dedupedEdges {
 		from := mermaidID(e.From)
 		to := mermaidID(e.To)
 		arrow := "-->"
