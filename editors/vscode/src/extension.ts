@@ -3,7 +3,6 @@ import {
   LanguageClient,
   LanguageClientOptions,
   ServerOptions,
-  TransportKind,
 } from "vscode-languageclient/node";
 import { DependencyGraphPanel, requestDependencyGraph } from "./graph/panel";
 import { findFirstConfigFile } from "./graph/resolveTarget";
@@ -23,10 +22,12 @@ function getServerPath(): string {
 async function startClient(): Promise<void> {
   const serverPath = getServerPath();
 
+  // No transport option: for an Executable the default is plain stdio.
+  // Specifying TransportKind.stdio makes vscode-languageclient append a
+  // --stdio argument, which the server rejects as an unknown flag.
   const run: import("vscode-languageclient/node").Executable = {
     command: serverPath,
     args: ["lsp"],
-    transport: TransportKind.stdio,
   };
 
   const serverOptions: ServerOptions = {
