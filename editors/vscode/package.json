@@ -1,0 +1,63 @@
+{
+  "name": "sqldefkit-vscode",
+  "displayName": "sqldefkit",
+  "description": "Language client for sqldefkit: diagnostics, go-to-definition, hover, and completion for split-file SQL schemas used with sqldef.",
+  "version": "0.1.0",
+  "publisher": "lazialize",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Lazialize/sqldefkit.git",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/sqldefkit.yaml",
+    "workspaceContains:**/sqldefkit.yml"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "sqldefkit",
+      "properties": {
+        "sqldefkit.serverPath": {
+          "type": "string",
+          "default": "sqldefkit",
+          "description": "Path to the sqldefkit binary used to run the language server (`<serverPath> lsp`)."
+        },
+        "sqldefkit.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the sqldefkit language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "typecheck": "tsc --noEmit",
+    "package": "vsce package",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.3"
+  }
+}

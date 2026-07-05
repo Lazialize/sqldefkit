@@ -344,6 +344,23 @@ vim.api.nvim_create_autocmd("FileType", {
 })
 ```
 
+### VS Code
+
+A minimal VS Code extension that starts `sqldefkit lsp` lives in
+[`editors/vscode`](editors/vscode). It is not published to the marketplace;
+build and install it locally:
+
+```sh
+cd editors/vscode
+npm install
+npm run build
+npm run package
+code --install-extension sqldefkit-vscode-0.1.0.vsix
+```
+
+See [`editors/vscode/README.md`](editors/vscode/README.md) for settings and
+details.
+
 ## Limitations
 
 - **Enum/custom types are not auto-detected.** A column declared as
