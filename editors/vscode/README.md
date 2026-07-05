@@ -11,6 +11,17 @@ diagnostics, go-to-definition, hover, and completion come from the
 of the main README for what the server provides and how a project is
 recognized.
 
+## Commands
+
+- **`sqldefkit: Show Dependency Graph`** (`sqldefkit.showDependencyGraph`) —
+  opens a WebView panel rendering the current project's object dependency
+  graph (tables, views, indexes, etc., laid out with dagre). Click a node
+  to jump to its definition; drag the background to pan, scroll to zoom,
+  and use the panel's **Refresh** button to re-fetch the graph after
+  editing. Requires a `sqldefkit` server new enough to advertise the
+  `sqldefkit/dependencyGraph` LSP request (v0.5.0+); older servers show an
+  info message instead of opening the panel.
+
 ## Requirements
 
 - The `sqldefkit` binary, **v0.3.0 or newer**, available either on your
@@ -60,7 +71,7 @@ cd editors/vscode
 npm install
 npm run build
 npm run package        # produces sqldefkit-vscode-<version>.vsix
-code --install-extension sqldefkit-vscode-0.1.0.vsix
+code --install-extension sqldefkit-vscode-0.2.0.vsix
 ```
 
 Alternatively, for development: open `editors/vscode` in VS Code, run
