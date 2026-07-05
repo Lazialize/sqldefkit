@@ -153,6 +153,29 @@ func unresolvedReferenceDiagnostics(symbols *Symbols) []diag.Diagnostic {
 	return diags
 }
 
+// GraphNodes builds graph.Node values from loaded statements, for
+// topological sorting or SCC/cycle analysis (e.g. internal/graphexport).
+// Exported so packages outside bundle can run internal/graph algorithms
+// (SCCs, Sort) directly over a Loaded result without bundle needing to
+// know about every such consumer.
+func (l Loaded) GraphNodes() []graph.Node {
+	return l.graphNodes()
+}
+
+// Statements returns every parsed statement in l, in the same
+// file-then-source order as GraphNodes/Stmts, for consumers outside
+// bundle (e.g. internal/graphexport) that need each statement's
+// Kind/Name/DepRefs but don't need bundle's internal statement wrapper
+// (file/index/subIndex/synthesized bookkeeping used only for
+// bundling/emit).
+func (l Loaded) Statements() []parse.Statement {
+	out := make([]parse.Statement, len(l.Stmts))
+	for i, s := range l.Stmts {
+		out[i] = s.ps
+	}
+	return out
+}
+
 // graphNodes builds graph.Node values from loaded statements, for
 // topological sorting.
 func (l Loaded) graphNodes() []graph.Node {

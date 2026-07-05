@@ -28,6 +28,7 @@ Or download a prebuilt binary from the
 ```
 sqldefkit bundle [--config <path>] [--dir <path>] [--dialect <postgres|mysql|sqlite>] [-o <file>]
 sqldefkit check [--config <path>] [--dir <path>] [--dialect <postgres|mysql|sqlite>]
+sqldefkit graph [--config <path>] [--dir <path>] [--dialect <postgres|mysql|sqlite>] [--format dot|mermaid|json] [-o <file>]
 sqldefkit lsp
 sqldefkit version
 ```
@@ -42,6 +43,8 @@ sqldefkit version
 For each of `--dir`, `--dialect`, and `-o`, precedence is: explicit flag > value from the config file > built-in default (`--dir` defaults to `.`, `-o` defaults to stdout). `--dialect` has no built-in default — it must come from a flag or the config file, or `bundle` fails with an error naming both options.
 
 `check` validates a schema tree and reports diagnostics without bundling anything; see [Checking a schema tree](#checking-a-schema-tree) below. It accepts the same `--config`/`--dir`/`--dialect` flags (with the same resolution precedence) as `bundle`.
+
+`graph` emits the schema's dependency graph as DOT, Mermaid, or JSON; see [Visualizing the dependency graph](#visualizing-the-dependency-graph) below. It accepts the same `--config`/`--dir`/`--dialect` flags as `bundle`/`check`, plus `--format` (default `dot`) and `-o` (default: stdout; unlike `bundle`, this is not read from the config file's `out`).
 
 `lsp` runs a Language Server Protocol server over stdio; see [Editor integration (LSP)](#editor-integration-lsp) below.
 
@@ -307,6 +310,74 @@ $ echo $?
 1
 ```
 
+## Visualizing the dependency graph
+
+`sqldefkit graph` loads a schema tree the same way `bundle`/`check` do and
+emits the dependency graph it computed, in one of three formats:
+
+```sh
+sqldefkit graph --dir schema --dialect postgres --format dot
+sqldefkit graph --dir schema --dialect postgres --format mermaid
+sqldefkit graph --dir schema --dialect postgres --format json
+```
+
+- `--format` — `dot` (default), `mermaid`, or `json`.
+- `-o` — output file path (default: stdout).
+
+Unlike `bundle`/`check`, `graph` never fails on a dependency cycle —
+visualizing cycles is the point. Every node and edge that's part of a
+cycle (computed the same way `bundle`'s FK-cycle-breaking pass finds one,
+via strongly connected components) is flagged, regardless of whether
+`bundle` would go on to split it automatically.
+
+Given the mutually-referencing `orders`/`users` tables from
+[Dependency cycles](#dependency-cycles-mutually-referencing-tables)
+above, `--format mermaid` produces:
+
+```mermaid
+graph TD
+  n_orders_96584038[orders]
+  class n_orders_96584038 cycle
+  n_users_5b7dcd14[users]
+  class n_users_5b7dcd14 cycle
+  n_orders_96584038 -->|fk| n_users_5b7dcd14
+  n_users_5b7dcd14 -->|fk| n_orders_96584038
+  classDef cycle stroke:#ff0000,stroke-width:2px
+  linkStyle 0 stroke:#ff0000,stroke-width:2px
+  linkStyle 1 stroke:#ff0000,stroke-width:2px
+```
+
+Nodes are labeled with the object's name (schema-qualified names are kept
+as the label even though the underlying Mermaid node id is sanitized —
+Mermaid ids can't contain `.`); both nodes and edges inside a cycle get a
+red highlight via a `cycle` class/`linkStyle`.
+
+`--format dot` produces an equivalent Graphviz digraph (node shape varies
+by kind — boxes for tables, ellipses for views, and so on; edge style
+varies by kind — solid for foreign keys, dashed for view/directive edges,
+dotted for `ON` targets; cycle members are colored red):
+
+```
+digraph dependencies {
+  rankdir=LR;
+  "orders" [label="orders", shape=box, color="red"];
+  "users" [label="users", shape=box, color="red"];
+  "orders" -> "users" [label="fk", style=solid, color="red"];
+  "users" -> "orders" [label="fk", style=solid, color="red"];
+}
+```
+
+`--format json` produces the same versioned payload the
+`sqldefkit/dependencyGraph` LSP request returns (see below): a `version`
+field, an array of `nodes` (`id`, `kind`, `file`/`line`/`col` when
+defined in the schema, `external`/`unknown` for a high-confidence
+reference to a name that isn't, `inCycle`), and an array of `edges`
+(`from`, `to`, `kind` — one of `fk`, `on`, `view`, `directive`, `alter`
+— and `inCycle`). A best-effort view `FROM`/`JOIN` reference to an
+undefined name is dropped entirely rather than turned into an external
+node, matching `check`'s treatment of the same case (see
+[Checking a schema tree](#checking-a-schema-tree)).
+
 ## Editor integration (LSP)
 
 `sqldefkit lsp` runs a Language Server Protocol server over stdio. It provides:
@@ -321,6 +392,15 @@ $ echo $?
 - **Completion** — after `REFERENCES`, inside a `-- sqldefkit:require`
   directive comment, or after `ON` in `CREATE INDEX`/`CREATE TRIGGER`, complete
   defined object names.
+- **Dependency graph** — a custom `sqldefkit/dependencyGraph` request (params:
+  `{"uri": "file://..."}`, naming any file in the project) returns the same
+  JSON payload `sqldefkit graph --format json` produces (see
+  [Visualizing the dependency graph](#visualizing-the-dependency-graph)),
+  computed overlay-aware from the project's current in-editor buffers. The
+  server advertises this under `capabilities.experimental.dependencyGraph` in
+  its `initialize` response so clients can feature-detect it; a file outside
+  any project returns a `null` result, not an error, like every other
+  position-based request here.
 
 A project is recognized the same way `bundle`/`check` discover one: by
 finding a `sqldefkit.yaml` (or

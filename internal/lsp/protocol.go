@@ -179,6 +179,23 @@ type serverCapabilities struct {
 	// the LSP default; stated here for clarity even though omitting it
 	// would mean the same thing.
 	PositionEncoding string `json:"positionEncoding"`
+	// Experimental advertises non-standard capabilities so clients can
+	// feature-detect them (e.g. sqldefkit/dependencyGraph) rather than
+	// unconditionally sending a request the server might not support.
+	Experimental experimentalCapabilities `json:"experimental"`
+}
+
+// experimentalCapabilities is the (partial) contents of
+// ServerCapabilities.experimental this server advertises.
+type experimentalCapabilities struct {
+	DependencyGraph bool `json:"dependencyGraph"`
+}
+
+// dependencyGraphParams is sqldefkit/dependencyGraph's params: any file
+// belonging to a project, resolved the same way other handlers resolve
+// their textDocument URI.
+type dependencyGraphParams struct {
+	URI string `json:"uri"`
 }
 
 // initializeResult is the result of the initialize request.
