@@ -2,7 +2,7 @@
   "name": "sqldefkit-vscode",
   "displayName": "sqldefkit",
   "description": "Language client for sqldefkit: diagnostics, go-to-definition, hover, and completion for split-file SQL schemas used with sqldef.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "lazialize",
   "license": "MIT",
   "repository": {
@@ -23,6 +23,12 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "sqldefkit.showDependencyGraph",
+        "title": "sqldefkit: Show Dependency Graph"
+      }
+    ],
     "configuration": {
       "title": "sqldefkit",
       "properties": {
@@ -45,12 +51,15 @@
     }
   },
   "scripts": {
-    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
-    "typecheck": "tsc --noEmit",
+    "build": "npm run build:extension && npm run build:webview",
+    "build:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "build:webview": "esbuild src/webview/graph.ts --bundle --outfile=dist/webview/graph.js --format=iife --platform=browser --target=es2020",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
     "package": "vsce package",
     "vscode:prepublish": "npm run build"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {

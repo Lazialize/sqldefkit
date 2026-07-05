@@ -1,8 +1,10 @@
 src/**
 out/**
+scripts/**
 .gitignore
 tsconfig.json
-**/tsconfig.json
+tsconfig.webview.json
+**/tsconfig*.json
 **/*.map
 **/*.ts
 node_modules/**

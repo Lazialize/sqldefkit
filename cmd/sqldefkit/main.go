@@ -267,6 +267,8 @@ func runLSP(args []string, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "Usage: sqldefkit lsp")
 		fs.PrintDefaults()
 	}
+	// Accepted and ignored: many LSP clients pass --stdio by convention.
+	fs.Bool("stdio", false, "ignored (stdio is the only transport)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

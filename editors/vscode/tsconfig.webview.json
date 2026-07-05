@@ -1,10 +1,10 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "commonjs",
+    "target": "ES2020",
+    "module": "ES2020",
     "moduleResolution": "node",
-    "lib": ["ES2022"],
-    "outDir": "out",
+    "lib": ["ES2020", "DOM"],
+    "outDir": "out/webview",
     "rootDir": "src",
     "strict": true,
     "noUnusedLocals": true,
@@ -16,6 +16,5 @@
     "forceConsistentCasingInFileNames": true,
     "sourceMap": true
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["src/webview/**/*.ts"]
+  "include": ["src/webview/**/*.ts", "src/graph/protocol.ts"]
 }
