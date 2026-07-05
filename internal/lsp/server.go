@@ -9,6 +9,7 @@ import (
 
 	"github.com/Lazialize/sqldefkit/internal/bundle"
 	"github.com/Lazialize/sqldefkit/internal/diag"
+	"github.com/Lazialize/sqldefkit/internal/graphexport"
 	"github.com/Lazialize/sqldefkit/internal/parse"
 	"github.com/Lazialize/sqldefkit/internal/pos"
 )
@@ -122,6 +123,8 @@ func (s *Server) handleRequest(msg requestMessage) {
 		s.handleHover(msg)
 	case "textDocument/completion":
 		s.handleCompletion(msg)
+	case "sqldefkit/dependencyGraph":
+		s.handleDependencyGraph(msg)
 	default:
 		_ = s.w.writeResponse(msg.ID, nil, &responseError{
 			Code:    codeMethodNotFound,
@@ -170,6 +173,7 @@ func (s *Server) handleInitialize(msg requestMessage) {
 			HoverProvider:      true,
 			CompletionProvider: completionOptions{},
 			PositionEncoding:   positionEncodingUTF16,
+			Experimental:       experimentalCapabilities{DependencyGraph: true},
 		},
 		ServerInfo: serverInfo{Name: "sqldefkit"},
 	}
@@ -474,6 +478,50 @@ func (s *Server) handleCompletion(msg requestMessage) {
 	tablesOnly := ctx.Kind == completionContextReferences || ctx.Kind == completionContextOn
 	items := completionItemsForNames(symbols, ctx.Prefix, tablesOnly)
 	_ = s.w.writeResponse(msg.ID, completionList{IsIncomplete: false, Items: items}, nil)
+}
+
+// handleDependencyGraph answers the custom sqldefkit/dependencyGraph
+// request: params name a file belonging to a project (same resolution
+// rule as every other handler here — config.Discover from the file's
+// directory, file must be under schema_dir, config must declare a
+// dialect); the response is the internal/graphexport.Graph JSON payload
+// for that project, built overlay-aware (unsaved buffer content is
+// reflected via s.sess.readFile). A file outside any project responds
+// with a null result, not an error, matching this server's established
+// convention for "no target" (see resolvePositionContext's callers).
+func (s *Server) handleDependencyGraph(msg requestMessage) {
+	var params dependencyGraphParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		_ = s.w.writeResponse(msg.ID, nil, &responseError{Code: codeInvalidRequest, Message: "invalid params"})
+		return
+	}
+
+	path, ok := uriToPath(params.URI)
+	if !ok {
+		_ = s.w.writeResponse(msg.ID, json.RawMessage("null"), nil)
+		return
+	}
+
+	proj, ok := s.sess.resolveProject(path)
+	if !ok {
+		_ = s.w.writeResponse(msg.ID, json.RawMessage("null"), nil)
+		return
+	}
+
+	root := proj.cfg.SchemaDir
+	if root == "" {
+		root = proj.cfg.Dir
+	}
+
+	loaded, err := bundle.Load(root, proj.cfg.Dialect, s.sess.readFile)
+	if err != nil {
+		s.log.Printf("dependencyGraph: load failed for project %s: %v", proj.cfg.Dir, err)
+		_ = s.w.writeResponse(msg.ID, json.RawMessage("null"), nil)
+		return
+	}
+
+	g := graphexport.Build(loaded)
+	_ = s.w.writeResponse(msg.ID, g, nil)
 }
 
 // completionItemsForNames builds the sorted, prefix-filtered completion

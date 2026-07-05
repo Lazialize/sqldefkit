@@ -14,6 +14,7 @@ import (
 	"github.com/Lazialize/sqldefkit/internal/bundle"
 	"github.com/Lazialize/sqldefkit/internal/config"
 	"github.com/Lazialize/sqldefkit/internal/diag"
+	"github.com/Lazialize/sqldefkit/internal/graphexport"
 	"github.com/Lazialize/sqldefkit/internal/lsp"
 )
 
@@ -33,6 +34,7 @@ Commands:
 
 	bundle    bundle a directory of .sql files into one file
 	check     report diagnostics (errors and warnings) for a schema tree
+	graph     emit the schema's dependency graph (dot, mermaid, or json)
 	lsp       run a Language Server Protocol server over stdio
 	version   print version and exit
 
@@ -77,6 +79,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runBundle(rest, stdout, stderr)
 	case "check":
 		return runCheck(rest, stdout, stderr)
+	case "graph":
+		return runGraph(rest, stdout, stderr)
 	case "lsp":
 		return runLSP(rest, stderr)
 	case "version":
@@ -186,6 +190,72 @@ func runCheck(args []string, stdout, stderr io.Writer) error {
 		return errCheckFailed
 	}
 	return nil
+}
+
+// runGraph implements the `graph` subcommand: it loads the schema tree
+// the same way `bundle`/`check` do, builds the dependency-graph payload
+// (internal/graphexport.Build — never fails on a cycle; visualizing
+// cycles is the point), and renders it in the requested format (dot,
+// mermaid, or json) to stdout or -o.
+func runGraph(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("sqldefkit graph", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	configPath := fs.String("config", "", "path to sqldefkit.yaml (default: discovered from the current directory upward)")
+	dir := fs.String("dir", "", "root directory to scan recursively for *.sql files (default \".\", or schema_dir from config)")
+	dialectFlag := fs.String("dialect", "", "SQL dialect: postgres, mysql, or sqlite (required, from flag or config)")
+	format := fs.String("format", "dot", "output format: dot, mermaid, or json")
+	output := fs.String("o", "", "output file path (default: stdout)")
+
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: sqldefkit graph [--config <path>] [--dir <path>] [--dialect <postgres|mysql|sqlite>] [--format dot|mermaid|json] [-o <file>]")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := resolveConfig(*configPath)
+	if err != nil {
+		return err
+	}
+
+	dialect, err := resolveDialect(*dialectFlag, cfg)
+	if err != nil {
+		return err
+	}
+
+	root := resolveDir(*dir, cfg)
+
+	loaded, err := bundle.Load(root, dialect, os.ReadFile)
+	if err != nil {
+		return err
+	}
+
+	g := graphexport.Build(loaded)
+
+	var out []byte
+	switch *format {
+	case "dot":
+		out = graphexport.FormatDOT(g)
+	case "mermaid":
+		out = graphexport.FormatMermaid(g)
+	case "json":
+		out, err = graphexport.FormatJSON(g)
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown --format %q (expected dot, mermaid, or json)", *format)
+	}
+
+	dest := *output
+	if dest == "" {
+		_, err = stdout.Write(out)
+		return err
+	}
+	return os.WriteFile(dest, out, 0o644)
 }
 
 // runLSP runs an LSP server on stdin/stdout, logging to stderr, until the
