@@ -2,7 +2,7 @@
   "name": "sqldefkit-vscode",
   "displayName": "sqldefkit",
   "description": "Language client for sqldefkit: diagnostics, go-to-definition, hover, and completion for split-file SQL schemas used with sqldef.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "lazialize",
   "license": "MIT",
   "repository": {

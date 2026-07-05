@@ -126,11 +126,102 @@ export function createGraphView(
     const layout = layoutGraph(graph);
     rootGroup.innerHTML = "";
 
+    // Track which SVG elements belong to which "row key" (nodeId + "::" +
+    // columnName) and which fk edges touch that row, so hover on a row
+    // (or an edge) can toggle highlighting classes across both — pure
+    // CSS-class driven, no framework, per the dbmlx-inspired hover UX.
+    const rowElementsByKey = new Map<string, SVGElement[]>();
+    const edgesByRowKey = new Map<string, SVGElement[]>();
+    const edgeElements: SVGElement[] = [];
+
+    function rowKey(nodeId: string, columnName: string): string {
+      return `${nodeId}::${columnName}`;
+    }
+    function addRowElement(key: string, el: SVGElement): void {
+      const list = rowElementsByKey.get(key);
+      if (list) {
+        list.push(el);
+      } else {
+        rowElementsByKey.set(key, [el]);
+      }
+    }
+    function addEdgeForRowKey(key: string, el: SVGElement): void {
+      const list = edgesByRowKey.get(key);
+      if (list) {
+        list.push(el);
+      } else {
+        edgesByRowKey.set(key, [el]);
+      }
+    }
+
+    function setEdgesDimmed(dimmed: boolean): void {
+      for (const el of edgeElements) {
+        el.classList.toggle("dimmed", dimmed);
+      }
+    }
+
+    function highlightRowKey(key: string, on: boolean): void {
+      for (const el of rowElementsByKey.get(key) ?? []) {
+        el.classList.toggle("row-highlight", on);
+      }
+      for (const el of edgesByRowKey.get(key) ?? []) {
+        el.classList.toggle("edge-highlight", on);
+      }
+    }
+
     for (const edge of layout.edges) {
-      rootGroup.appendChild(renderEdge(edge));
+      const edgeEl = renderEdge(edge);
+      edgeElements.push(edgeEl);
+      rootGroup.appendChild(edgeEl);
+
+      if (edge.kind === "fk") {
+        if (edge.fromColumn) {
+          addEdgeForRowKey(rowKey(edge.from, edge.fromColumn), edgeEl);
+        }
+        if (edge.toColumn) {
+          addEdgeForRowKey(rowKey(edge.to, edge.toColumn), edgeEl);
+        }
+        edgeEl.addEventListener("mouseover", () => {
+          setEdgesDimmed(true);
+          edgeEl.classList.remove("dimmed");
+          edgeEl.classList.add("edge-highlight");
+          if (edge.fromColumn) {
+            highlightRowKey(rowKey(edge.from, edge.fromColumn), true);
+          }
+          if (edge.toColumn) {
+            highlightRowKey(rowKey(edge.to, edge.toColumn), true);
+          }
+        });
+        edgeEl.addEventListener("mouseout", () => {
+          setEdgesDimmed(false);
+          edgeEl.classList.remove("edge-highlight");
+          if (edge.fromColumn) {
+            highlightRowKey(rowKey(edge.from, edge.fromColumn), false);
+          }
+          if (edge.toColumn) {
+            highlightRowKey(rowKey(edge.to, edge.toColumn), false);
+          }
+        });
+      }
     }
     for (const node of layout.nodes) {
-      rootGroup.appendChild(renderNode(node, callbacks));
+      rootGroup.appendChild(
+        renderNode(node, callbacks, {
+          onRowHover: (columnName, hovering) => {
+            const key = rowKey(node.id, columnName);
+            if (hovering) {
+              setEdgesDimmed(true);
+              for (const el of edgesByRowKey.get(key) ?? []) {
+                el.classList.remove("dimmed");
+              }
+            } else {
+              setEdgesDimmed(false);
+            }
+            highlightRowKey(key, hovering);
+          },
+          registerRowElement: (columnName, el) => addRowElement(rowKey(node.id, columnName), el),
+        })
+      );
     }
     rootGroup.appendChild(renderLegend(layout));
 
@@ -185,13 +276,51 @@ function ensureMarkerDefs(svg: SVGSVGElement): void {
   svg.appendChild(defs);
 }
 
+// buildEdgePoints returns the point list to actually draw, splicing in
+// fromAnchor/toAnchor (row-level endpoints) in place of dagre's own first/
+// last point when present. Rather than just prepending/appending the
+// anchor (which can produce a visually odd kink right at the box edge),
+// the adjacent dagre point is *replaced*: the path runs as a straight
+// segment from the row anchor directly to dagre's second (or
+// second-to-last) point, then continues along dagre's original interior
+// routing unchanged. This keeps the bulk of the path (which dagre already
+// routed to avoid other nodes) intact, and only the segment nearest the
+// box — which dagre had anchored to the box's old center/edge — gets
+// redrawn to instead meet the specific row.
+function buildEdgePoints(
+  edge: LayoutResult["edges"][number]
+): Array<{ x: number; y: number }> {
+  if (edge.points.length < 2) {
+    return edge.points;
+  }
+  const points = [...edge.points];
+  if (edge.fromAnchor) {
+    points[0] = edge.fromAnchor;
+  }
+  if (edge.toAnchor) {
+    points[points.length - 1] = edge.toAnchor;
+  }
+  return points;
+}
+
 function renderEdge(edge: LayoutResult["edges"][number]): SVGElement {
   const group = document.createElementNS(SVG_NS, "g");
-  if (edge.points.length >= 2) {
-    const d = edge.points
-      .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
-      .join(" ");
+  group.classList.add("edge");
+  const points = buildEdgePoints(edge);
+  if (points.length >= 2) {
+    const d = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+
+    // A wide, invisible stroke widens the hover hit-area beyond the thin
+    // visible line, without affecting the drawn appearance.
+    const hitArea = document.createElementNS(SVG_NS, "path");
+    hitArea.setAttribute("d", d);
+    hitArea.setAttribute("fill", "none");
+    hitArea.setAttribute("stroke", "transparent");
+    hitArea.setAttribute("stroke-width", "12");
+    group.appendChild(hitArea);
+
     const path = document.createElementNS(SVG_NS, "path");
+    path.classList.add("edge-path");
     path.setAttribute("d", d);
     path.setAttribute("fill", "none");
     const stroke = edge.inCycle ? "#e51400" : "var(--vscode-editor-foreground)";
@@ -207,43 +336,83 @@ function renderEdge(edge: LayoutResult["edges"][number]): SVGElement {
       edge.inCycle ? "url(#arrow-cycle)" : "url(#arrow)"
     );
     const title = document.createElementNS(SVG_NS, "title");
-    title.textContent = `${edge.from} → ${edge.to} (${edge.kind})`;
+    const columnSuffix =
+      edge.fromColumn && edge.toColumn ? ` [${edge.fromColumn} → ${edge.toColumn}]` : "";
+    title.textContent = `${edge.from} → ${edge.to} (${edge.kind})${columnSuffix}`;
     path.appendChild(title);
     group.appendChild(path);
   }
   return group;
 }
 
+export interface NodeRenderCallbacks {
+  onRowHover: (columnName: string, hovering: boolean) => void;
+  registerRowElement: (columnName: string, el: SVGElement) => void;
+}
+
 function renderNode(
   node: LayoutResult["nodes"][number],
-  callbacks: RenderCallbacks
+  callbacks: RenderCallbacks,
+  rowCallbacks: NodeRenderCallbacks
 ): SVGElement {
   const group = document.createElementNS(SVG_NS, "g");
   group.setAttribute("data-node-id", node.id);
 
   const x = node.x - node.width / 2;
   const y = node.y - node.height / 2;
-
-  const rect = document.createElementNS(SVG_NS, "rect");
-  rect.setAttribute("x", String(x));
-  rect.setAttribute("y", String(y));
-  rect.setAttribute("width", String(node.width));
-  rect.setAttribute("height", String(node.height));
-  rect.setAttribute("rx", "6");
-  rect.setAttribute("ry", "6");
-  rect.setAttribute("fill", `var(${kindColorVar(node.kind)})`);
-  rect.setAttribute("fill-opacity", node.external ? "0.15" : "0.35");
   const strokeColor = node.inCycle ? "#e51400" : `var(${kindColorVar(node.kind)})`;
-  rect.setAttribute("stroke", strokeColor);
-  rect.setAttribute("stroke-width", node.inCycle ? "2.5" : "1.5");
+
+  const outline = document.createElementNS(SVG_NS, "rect");
+  outline.setAttribute("x", String(x));
+  outline.setAttribute("y", String(y));
+  outline.setAttribute("width", String(node.width));
+  outline.setAttribute("height", String(node.height));
+  outline.setAttribute("rx", "6");
+  outline.setAttribute("ry", "6");
+  outline.setAttribute("fill", "var(--vscode-editor-background)");
+  outline.setAttribute("stroke", strokeColor);
+  outline.setAttribute("stroke-width", node.inCycle ? "2.5" : "1.5");
   if (node.external) {
-    rect.setAttribute("stroke-dasharray", "4,3");
+    outline.setAttribute("stroke-dasharray", "4,3");
   }
-  if (!node.external) {
-    group.style.cursor = "pointer";
-    group.addEventListener("click", () => callbacks.onNodeClick(node.id));
+  group.appendChild(outline);
+
+  if (node.rows && node.headerHeight !== undefined) {
+    renderTableRows(group, node, x, y, strokeColor, callbacks, rowCallbacks);
+  } else {
+    renderPlainBody(group, node, x, y);
+    if (!node.external) {
+      group.style.cursor = "pointer";
+      group.addEventListener("click", () => callbacks.onNodeClick(node.id));
+    }
   }
-  group.appendChild(rect);
+
+  const title = document.createElementNS(SVG_NS, "title");
+  title.textContent = `${node.id} (${node.kind}${node.external ? ", external" : ""})`;
+  group.appendChild(title);
+
+  return group;
+}
+
+// renderPlainBody draws today's single-row box body (fill + centered
+// label) for nodes without column data — v1 payloads, or non-table kinds.
+function renderPlainBody(
+  group: SVGElement,
+  node: LayoutResult["nodes"][number],
+  x: number,
+  y: number
+): void {
+  const fillRect = document.createElementNS(SVG_NS, "rect");
+  fillRect.setAttribute("x", String(x));
+  fillRect.setAttribute("y", String(y));
+  fillRect.setAttribute("width", String(node.width));
+  fillRect.setAttribute("height", String(node.height));
+  fillRect.setAttribute("rx", "6");
+  fillRect.setAttribute("ry", "6");
+  fillRect.setAttribute("fill", `var(${kindColorVar(node.kind)})`);
+  fillRect.setAttribute("fill-opacity", node.external ? "0.15" : "0.35");
+  fillRect.setAttribute("pointer-events", "none");
+  group.appendChild(fillRect);
 
   const text = document.createElementNS(SVG_NS, "text");
   text.setAttribute("x", String(node.x));
@@ -255,12 +424,153 @@ function renderNode(
   text.setAttribute("pointer-events", "none");
   text.textContent = node.id;
   group.appendChild(text);
+}
 
-  const title = document.createElementNS(SVG_NS, "title");
-  title.textContent = `${node.id} (${node.kind}${node.external ? ", external" : ""})`;
-  group.appendChild(title);
+// renderTableRows draws the dbmlx-style ER box: a colored header band
+// with the bold table name, followed by one row per column (name left,
+// PK/U badges + dimmed type right; NOT NULL columns render their name
+// bold). Row click/hover targets are transparent rects layered over the
+// text so hit-testing doesn't depend on exact glyph metrics.
+function renderTableRows(
+  group: SVGElement,
+  node: LayoutResult["nodes"][number],
+  x: number,
+  y: number,
+  strokeColor: string,
+  callbacks: RenderCallbacks,
+  rowCallbacks: NodeRenderCallbacks
+): void {
+  const headerHeight = node.headerHeight ?? 36;
+  const rows = node.rows ?? [];
 
-  return group;
+  const header = document.createElementNS(SVG_NS, "rect");
+  header.setAttribute("x", String(x));
+  header.setAttribute("y", String(y));
+  header.setAttribute("width", String(node.width));
+  header.setAttribute("height", String(headerHeight));
+  header.setAttribute("fill", `var(${kindColorVar(node.kind)})`);
+  header.setAttribute("fill-opacity", node.external ? "0.15" : "0.35");
+  if (!node.external) {
+    header.style.cursor = "pointer";
+    header.addEventListener("click", () => callbacks.onNodeClick(node.id));
+  }
+  group.appendChild(header);
+
+  const headerText = document.createElementNS(SVG_NS, "text");
+  headerText.setAttribute("x", String(node.x));
+  headerText.setAttribute("y", String(y + headerHeight / 2));
+  headerText.setAttribute("text-anchor", "middle");
+  headerText.setAttribute("dominant-baseline", "middle");
+  headerText.setAttribute("fill", "var(--vscode-editor-foreground)");
+  headerText.setAttribute("font-size", "12");
+  headerText.setAttribute("font-weight", "bold");
+  headerText.setAttribute("pointer-events", "none");
+  headerText.textContent = node.id;
+  group.appendChild(headerText);
+
+  const nameX = x + 10;
+  const typeRightX = x + node.width - 10;
+
+  for (const [i, col] of rows.entries()) {
+    const rowTop = y + headerHeight + i * col.height;
+    const rowCenterY = y + col.y;
+
+    if (i > 0) {
+      const divider = document.createElementNS(SVG_NS, "line");
+      divider.setAttribute("x1", String(x));
+      divider.setAttribute("x2", String(x + node.width));
+      divider.setAttribute("y1", String(rowTop));
+      divider.setAttribute("y2", String(rowTop));
+      divider.setAttribute("stroke", strokeColor);
+      divider.setAttribute("stroke-opacity", "0.25");
+      divider.setAttribute("stroke-width", "1");
+      divider.setAttribute("pointer-events", "none");
+      group.appendChild(divider);
+    }
+
+    const rowGroup = document.createElementNS(SVG_NS, "g");
+    rowGroup.classList.add("er-row");
+    rowGroup.style.cursor = node.external ? "default" : "pointer";
+
+    const hitRect = document.createElementNS(SVG_NS, "rect");
+    hitRect.setAttribute("x", String(x));
+    hitRect.setAttribute("y", String(rowTop));
+    hitRect.setAttribute("width", String(node.width));
+    hitRect.setAttribute("height", String(col.height));
+    hitRect.setAttribute("fill", "transparent");
+    rowGroup.appendChild(hitRect);
+
+    const nameText = document.createElementNS(SVG_NS, "text");
+    nameText.setAttribute("x", String(nameX));
+    nameText.setAttribute("y", String(rowCenterY));
+    nameText.setAttribute("dominant-baseline", "middle");
+    nameText.setAttribute("fill", "var(--vscode-editor-foreground)");
+    nameText.setAttribute("font-size", "11");
+    nameText.setAttribute("pointer-events", "none");
+    if (findColumn(node, col.name)?.notNull) {
+      nameText.setAttribute("font-weight", "bold");
+    }
+    nameText.textContent = col.name;
+    rowGroup.appendChild(nameText);
+
+    const column = findColumn(node, col.name);
+    const badges: string[] = [];
+    if (column?.pk) {
+      badges.push("PK");
+    }
+    if (column?.unique) {
+      badges.push("U");
+    }
+
+    const typeText = document.createElementNS(SVG_NS, "text");
+    typeText.setAttribute("x", String(typeRightX));
+    typeText.setAttribute("y", String(rowCenterY));
+    typeText.setAttribute("text-anchor", "end");
+    typeText.setAttribute("dominant-baseline", "middle");
+    typeText.setAttribute("fill", "var(--vscode-editor-foreground)");
+    typeText.setAttribute("fill-opacity", "0.6");
+    typeText.setAttribute("font-size", "10");
+    typeText.setAttribute("pointer-events", "none");
+    typeText.textContent = column?.type ?? "";
+    rowGroup.appendChild(typeText);
+
+    if (badges.length > 0) {
+      const badgeText = document.createElementNS(SVG_NS, "text");
+      // Position badges immediately left of the type text; a rough
+      // character-width estimate (matches layout.ts's) keeps them from
+      // overlapping without needing real text measurement.
+      const typeWidthEstimate = (column?.type.length ?? 0) * 6 + 6;
+      badgeText.setAttribute("x", String(typeRightX - typeWidthEstimate));
+      badgeText.setAttribute("y", String(rowCenterY));
+      badgeText.setAttribute("text-anchor", "end");
+      badgeText.setAttribute("dominant-baseline", "middle");
+      badgeText.setAttribute("fill", `var(${kindColorVar(node.kind)})`);
+      badgeText.setAttribute("font-size", "9");
+      badgeText.setAttribute("font-weight", "bold");
+      badgeText.setAttribute("pointer-events", "none");
+      badgeText.textContent = badges.join(" ");
+      rowGroup.appendChild(badgeText);
+    }
+
+    if (!node.external) {
+      rowGroup.addEventListener("click", (event) => {
+        event.stopPropagation();
+        callbacks.onNodeClick(node.id);
+      });
+    }
+    rowGroup.addEventListener("mouseover", () => rowCallbacks.onRowHover(col.name, true));
+    rowGroup.addEventListener("mouseout", () => rowCallbacks.onRowHover(col.name, false));
+
+    group.appendChild(rowGroup);
+    rowCallbacks.registerRowElement(col.name, rowGroup);
+  }
+}
+
+function findColumn(
+  node: LayoutResult["nodes"][number],
+  name: string
+): { name: string; type: string; pk?: boolean; notNull?: boolean; unique?: boolean } | undefined {
+  return node.columns?.find((c) => c.name === name);
 }
 
 function renderLegend(layout: LayoutResult): SVGElement {
@@ -271,14 +581,18 @@ function renderLegend(layout: LayoutResult): SVGElement {
     ["index", "index"],
     ["unknown", "external ref"],
   ];
+  // Text-only lines appended below the kind swatches, explaining the ER
+  // row markers: badges for PK/unique, and bold for NOT NULL.
+  const textLines = ["PK / U badge = primary key / unique", "bold column name = NOT NULL"];
 
   const x = -20;
   let y = layout.height + 10;
+  const totalLines = entries.length + textLines.length;
   const box = document.createElementNS(SVG_NS, "rect");
   box.setAttribute("x", String(x - 10));
   box.setAttribute("y", String(y - 16));
-  box.setAttribute("width", "150");
-  box.setAttribute("height", String(entries.length * 18 + 10));
+  box.setAttribute("width", "210");
+  box.setAttribute("height", String(totalLines * 18 + 10));
   box.setAttribute("fill", "var(--vscode-editor-background)");
   box.setAttribute("stroke", "var(--vscode-editor-foreground)");
   box.setAttribute("stroke-opacity", "0.2");
@@ -302,6 +616,19 @@ function renderLegend(layout: LayoutResult): SVGElement {
     text.setAttribute("font-size", "11");
     text.setAttribute("fill", "var(--vscode-editor-foreground)");
     text.textContent = label;
+    group.appendChild(text);
+
+    y += 18;
+  }
+
+  for (const line of textLines) {
+    const text = document.createElementNS(SVG_NS, "text");
+    text.setAttribute("x", String(x));
+    text.setAttribute("y", String(y));
+    text.setAttribute("font-size", "10");
+    text.setAttribute("fill", "var(--vscode-editor-foreground)");
+    text.setAttribute("fill-opacity", "0.7");
+    text.textContent = line;
     group.appendChild(text);
 
     y += 18;

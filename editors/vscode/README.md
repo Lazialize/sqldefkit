@@ -16,11 +16,25 @@ recognized.
 - **`sqldefkit: Show Dependency Graph`** (`sqldefkit.showDependencyGraph`) —
   opens a WebView panel rendering the current project's object dependency
   graph (tables, views, indexes, etc., laid out with dagre). Click a node
-  to jump to its definition; drag the background to pan, scroll to zoom,
-  and use the panel's **Refresh** button to re-fetch the graph after
-  editing. Requires a `sqldefkit` server new enough to advertise the
-  `sqldefkit/dependencyGraph` LSP request (v0.5.0+); older servers show an
-  info message instead of opening the panel.
+  (or a table's header) to jump to its definition; drag the background to
+  pan, scroll to zoom, and use the panel's **Refresh** button to re-fetch
+  the graph after editing. Requires a `sqldefkit` server new enough to
+  advertise the `sqldefkit/dependencyGraph` LSP request (v0.5.0+); older
+  servers show an info message instead of opening the panel.
+
+  Table nodes render dbmlx-style entity-relationship boxes when the
+  server's payload includes column data (dependency graph payload
+  **version 2**): a header with the table name, followed by one row per
+  column showing its name and type. `PK` and `U` badges mark primary-key
+  and unique columns; a **bold** column name means `NOT NULL`.
+  Foreign-key edges anchor to the exact source/target column rows instead
+  of the table box as a whole, and hovering a column row (or an edge)
+  highlights every FK edge touching that column while dimming the rest.
+  Clicking a column row jumps to the table's definition, same as clicking
+  the header — the payload doesn't carry per-column source positions.
+  Against an older server that only emits payload version 1 (no column
+  data), tables fall back to the plain single-box rendering from previous
+  versions; nothing breaks, you just don't get row-level detail.
 
 ## Requirements
 
@@ -71,7 +85,7 @@ cd editors/vscode
 npm install
 npm run build
 npm run package        # produces sqldefkit-vscode-<version>.vsix
-code --install-extension sqldefkit-vscode-0.2.0.vsix
+code --install-extension sqldefkit-vscode-0.3.0.vsix
 ```
 
 Alternatively, for development: open `editors/vscode` in VS Code, run

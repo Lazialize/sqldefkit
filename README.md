@@ -522,11 +522,13 @@ cd editors/vscode
 npm install
 npm run build
 npm run package
-code --install-extension sqldefkit-vscode-0.2.0.vsix
+code --install-extension sqldefkit-vscode-0.3.0.vsix
 ```
 
 It also adds an `sqldefkit: Show Dependency Graph` command that renders the
-project's dependency graph in a WebView, with click-to-jump to definitions.
+project's dependency graph in a WebView (tables as entity-relationship boxes
+with column rows, PK/unique badges, and column-anchored FK edges when the
+server sends payload version 2), with click-to-jump to definitions.
 
 See [`editors/vscode/README.md`](editors/vscode/README.md) for settings and
 details.
