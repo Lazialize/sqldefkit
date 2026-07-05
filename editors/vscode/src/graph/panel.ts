@@ -100,6 +100,17 @@ export function buildGraphHtml(
     svg.panning {
       cursor: grabbing;
     }
+    .edge.dimmed .edge-path {
+      opacity: 0.15 !important;
+    }
+    .edge.edge-highlight .edge-path {
+      opacity: 1 !important;
+      stroke-width: 3 !important;
+    }
+    .er-row.row-highlight rect {
+      fill: var(--vscode-editor-selectionBackground);
+      fill-opacity: 0.5;
+    }
   </style>
 </head>
 <body>
