@@ -8,19 +8,28 @@ import (
 // to pin exact formatter output: one plain table, one FK cycle between
 // orders/users (both directions marked InCycle), and one external node,
 // so DOT/Mermaid/JSON output for all three "interesting" shapes (cycle,
-// external, plain) is locked down in one place.
+// external, plain) is locked down in one place. Table nodes carry a v2
+// Columns list and the fk edges carry FromColumn/ToColumn, to pin the v2
+// JSON shape; DOT/Mermaid stay object-level and must render identically to
+// before despite this extra data (see FormatDOT/FormatMermaid tests).
 func fixtureGraph() Graph {
 	return Graph{
-		Version: 1,
+		Version: 2,
 		Nodes: []Node{
 			{ID: "ghost", Kind: "unknown", External: true},
-			{ID: "orders", Kind: "table", File: "orders.sql", Line: 1, Col: 14, InCycle: true},
-			{ID: "users", Kind: "table", File: "users.sql", Line: 1, Col: 14, InCycle: true},
+			{ID: "orders", Kind: "table", File: "orders.sql", Line: 1, Col: 14, InCycle: true, Columns: []Column{
+				{Name: "id", Type: "int", PK: true, NotNull: true},
+				{Name: "user_id", Type: "int", FK: &ColumnFK{Table: "users", Column: "id"}},
+			}},
+			{ID: "users", Kind: "table", File: "users.sql", Line: 1, Col: 14, InCycle: true, Columns: []Column{
+				{Name: "id", Type: "int", PK: true, NotNull: true},
+				{Name: "order_id", Type: "int", FK: &ColumnFK{Table: "orders", Column: "id"}},
+			}},
 		},
 		Edges: []Edge{
 			{From: "orders", To: "ghost", Kind: "fk", InCycle: false},
-			{From: "orders", To: "users", Kind: "fk", InCycle: true},
-			{From: "users", To: "orders", Kind: "fk", InCycle: true},
+			{From: "orders", To: "users", Kind: "fk", InCycle: true, FromColumn: "user_id", ToColumn: "id"},
+			{From: "users", To: "orders", Kind: "fk", InCycle: true, FromColumn: "order_id", ToColumn: "id"},
 		},
 	}
 }
@@ -31,7 +40,7 @@ func TestFormatJSON_ExactOutput(t *testing.T) {
 		t.Fatalf("FormatJSON: %v", err)
 	}
 	want := `{
-  "version": 1,
+  "version": 2,
   "nodes": [
     {
       "id": "ghost",
@@ -44,7 +53,23 @@ func TestFormatJSON_ExactOutput(t *testing.T) {
       "file": "orders.sql",
       "line": 1,
       "col": 14,
-      "inCycle": true
+      "inCycle": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "int",
+          "pk": true,
+          "notNull": true
+        },
+        {
+          "name": "user_id",
+          "type": "int",
+          "fk": {
+            "table": "users",
+            "column": "id"
+          }
+        }
+      ]
     },
     {
       "id": "users",
@@ -52,7 +77,23 @@ func TestFormatJSON_ExactOutput(t *testing.T) {
       "file": "users.sql",
       "line": 1,
       "col": 14,
-      "inCycle": true
+      "inCycle": true,
+      "columns": [
+        {
+          "name": "id",
+          "type": "int",
+          "pk": true,
+          "notNull": true
+        },
+        {
+          "name": "order_id",
+          "type": "int",
+          "fk": {
+            "table": "orders",
+            "column": "id"
+          }
+        }
+      ]
     }
   ],
   "edges": [
@@ -66,13 +107,17 @@ func TestFormatJSON_ExactOutput(t *testing.T) {
       "from": "orders",
       "to": "users",
       "kind": "fk",
-      "inCycle": true
+      "inCycle": true,
+      "fromColumn": "user_id",
+      "toColumn": "id"
     },
     {
       "from": "users",
       "to": "orders",
       "kind": "fk",
-      "inCycle": true
+      "inCycle": true,
+      "fromColumn": "order_id",
+      "toColumn": "id"
     }
   ]
 }
@@ -101,7 +146,7 @@ func TestFormatDOT_ExactOutput(t *testing.T) {
 
 func TestFormatDOT_QuotesSchemaQualifiedName(t *testing.T) {
 	g := Graph{
-		Version: 1,
+		Version: 2,
 		Nodes:   []Node{{ID: "schema.table", Kind: "table"}},
 	}
 	got := string(FormatDOT(g))

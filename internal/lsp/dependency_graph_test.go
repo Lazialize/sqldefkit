@@ -75,10 +75,27 @@ func TestIntegration_DependencyGraph(t *testing.T) {
 		t.Errorf("expected external missing_table node, got %+v", g.Nodes)
 	}
 
-	// 4. Unsaved edit fixing orders.sql to reference "users" instead ->
-	// a subsequent dependencyGraph request reflects the new edge without
-	// any save, and no longer shows missing_table.
-	fixedContent := "CREATE TABLE orders (\n\tid int PRIMARY KEY,\n\tuser_id int REFERENCES users(id)\n);\n"
+	// 3b. The orders table node carries its column list (version 2
+	// payload), with the FK edge's fromColumn/toColumn populated too.
+	ordersNode, ok := findGraphNode(g, "orders")
+	if !ok {
+		t.Fatal("missing orders node")
+	}
+	if len(ordersNode.Columns) != 2 || ordersNode.Columns[0].Name != "id" || ordersNode.Columns[1].Name != "user_id" {
+		t.Fatalf("orders.Columns = %+v, want [id user_id]", ordersNode.Columns)
+	}
+	if ordersNode.Columns[1].Type != "int" {
+		t.Errorf("orders.Columns[1].Type = %q, want int (before the edit)", ordersNode.Columns[1].Type)
+	}
+	if fkEdge, ok := findGraphEdge(g, "orders", "missing_table", "fk"); !ok || fkEdge.FromColumn != "user_id" {
+		t.Errorf("orders -> missing_table edge = %+v, ok=%v, want FromColumn=user_id", fkEdge, ok)
+	}
+
+	// 4. Unsaved edit fixing orders.sql to reference "users" instead, and
+	// changing user_id's type from int to bigint -> a subsequent
+	// dependencyGraph request reflects the new edge and the new column
+	// type without any save, and no longer shows missing_table.
+	fixedContent := "CREATE TABLE orders (\n\tid int PRIMARY KEY,\n\tuser_id bigint REFERENCES users(id)\n);\n"
 	client.sendNotification("textDocument/didChange", didChangeParams{
 		TextDocument:   versionedTextDocumentIdentifier{URI: pathToURI(ordersPath)},
 		ContentChanges: []contentChangeEvent{{Text: fixedContent}},
@@ -103,6 +120,17 @@ func TestIntegration_DependencyGraph(t *testing.T) {
 	}
 	if hasNode(g2, "missing_table") {
 		t.Errorf("did not want missing_table node after the fix, got %+v", g2.Nodes)
+	}
+	ordersNode2, ok := findGraphNode(g2, "orders")
+	if !ok {
+		t.Fatal("missing orders node after the edit")
+	}
+	userIDCol, ok := findGraphColumn(ordersNode2, "user_id")
+	if !ok || userIDCol.Type != "bigint" {
+		t.Errorf("orders.user_id column after unsaved edit = %+v, ok=%v, want Type=bigint", userIDCol, ok)
+	}
+	if fkEdge2, ok := findGraphEdge(g2, "orders", "users", "fk"); !ok || fkEdge2.FromColumn != "user_id" || fkEdge2.ToColumn != "id" {
+		t.Errorf("orders -> users edge after unsaved edit = %+v, ok=%v, want FromColumn=user_id ToColumn=id", fkEdge2, ok)
 	}
 
 	// 5. dependencyGraph on a file outside any project -> null.
@@ -138,4 +166,31 @@ func hasEdge(g graphexport.Graph, from, to, kind string) bool {
 		}
 	}
 	return false
+}
+
+func findGraphNode(g graphexport.Graph, id string) (graphexport.Node, bool) {
+	for _, n := range g.Nodes {
+		if n.ID == id {
+			return n, true
+		}
+	}
+	return graphexport.Node{}, false
+}
+
+func findGraphEdge(g graphexport.Graph, from, to, kind string) (graphexport.Edge, bool) {
+	for _, e := range g.Edges {
+		if e.From == from && e.To == to && e.Kind == kind {
+			return e, true
+		}
+	}
+	return graphexport.Edge{}, false
+}
+
+func findGraphColumn(n graphexport.Node, name string) (graphexport.Column, bool) {
+	for _, c := range n.Columns {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return graphexport.Column{}, false
 }

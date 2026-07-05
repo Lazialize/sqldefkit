@@ -39,11 +39,35 @@ func TestRun_Graph_JSONEndToEnd(t *testing.T) {
 	for _, e := range g.Edges {
 		if e.From == "orders" && e.To == "users" && e.Kind == "fk" {
 			foundEdge = true
+			if e.FromColumn != "user_id" || e.ToColumn != "id" {
+				t.Errorf("orders -> users (fk) edge = %+v, want FromColumn=user_id ToColumn=id", e)
+			}
 		}
 	}
 	if !foundEdge {
 		t.Errorf("missing orders -> users (fk) edge: %+v", g.Edges)
 	}
+
+	// Columns show up end-to-end through the CLI's JSON output.
+	var ordersNode *graphexport.Node
+	for i := range g.Nodes {
+		if g.Nodes[i].ID == "orders" {
+			ordersNode = &g.Nodes[i]
+		}
+	}
+	if ordersNode == nil {
+		t.Fatal("missing orders node")
+	}
+	if len(ordersNode.Columns) != 2 {
+		t.Fatalf("orders.Columns = %+v, want 2 columns", ordersNode.Columns)
+	}
+	if ordersNode.Columns[0].Name != "id" || !ordersNode.Columns[0].PK {
+		t.Errorf("orders.Columns[0] = %+v, want PK id", ordersNode.Columns[0])
+	}
+	if ordersNode.Columns[1].Name != "user_id" || ordersNode.Columns[1].FK == nil || ordersNode.Columns[1].FK.Table != "users" {
+		t.Errorf("orders.Columns[1] = %+v, want FK to users", ordersNode.Columns[1])
+	}
+
 	if !strings.HasSuffix(stdout.String(), "\n") {
 		t.Error("expected trailing newline")
 	}
@@ -139,7 +163,7 @@ func TestRun_Graph_OutputToFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading output file: %v", err)
 	}
-	if !strings.Contains(string(data), `"version": 1`) {
-		t.Errorf("output file content = %q, want version 1 JSON", data)
+	if !strings.Contains(string(data), `"version": 2`) {
+		t.Errorf("output file content = %q, want version 2 JSON", data)
 	}
 }

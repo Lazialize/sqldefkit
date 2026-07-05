@@ -14,12 +14,17 @@ import (
 	"sort"
 
 	"github.com/Lazialize/sqldefkit/internal/bundle"
+	"github.com/Lazialize/sqldefkit/internal/fkrewrite"
 	"github.com/Lazialize/sqldefkit/internal/graph"
 	"github.com/Lazialize/sqldefkit/internal/parse"
 )
 
 // Version is the current payload schema version (see Graph.Version).
-const Version = 1
+//
+// v2 adds table nodes' Columns and FK edges' FromColumn/ToColumn (see
+// Node/Edge doc comments) — DOT/Mermaid output is unaffected (both stay
+// object-level; see FormatDOT/FormatMermaid).
+const Version = 2
 
 // Graph is the versioned, JSON-serializable dependency graph payload.
 // Nodes is a slice of objects (not bare strings) so a future version can
@@ -43,6 +48,27 @@ type Node struct {
 	Col      int    `json:"col,omitempty"`
 	External bool   `json:"external,omitempty"`
 	InCycle  bool   `json:"inCycle,omitempty"`
+	// Columns holds the table's ordered column list (kind=table only, and
+	// only when non-empty — omitted for views/indexes/etc. and for a
+	// table ExtractColumns couldn't find a column list for at all).
+	Columns []Column `json:"columns,omitempty"`
+}
+
+// Column is one column of a table node, mirroring
+// internal/fkrewrite.Column/ColumnFK for JSON export.
+type Column struct {
+	Name    string    `json:"name"`
+	Type    string    `json:"type,omitempty"`
+	PK      bool      `json:"pk,omitempty"`
+	NotNull bool      `json:"notNull,omitempty"`
+	Unique  bool      `json:"unique,omitempty"`
+	FK      *ColumnFK `json:"fk,omitempty"`
+}
+
+// ColumnFK is a column's foreign-key target.
+type ColumnFK struct {
+	Table  string `json:"table"`
+	Column string `json:"column,omitempty"`
 }
 
 // Edge is one dependency edge: From depends on To.
@@ -51,12 +77,34 @@ type Edge struct {
 	To      string `json:"to"`
 	Kind    string `json:"kind"`
 	InCycle bool   `json:"inCycle"`
+	// FromColumn/ToColumn name the specific columns an "fk" edge connects
+	// (when known), letting a column-level ER rendering anchor the edge to
+	// the right rows instead of the table as a whole. Omitted (both empty)
+	// for edge kinds other than "fk", or when the participating columns
+	// aren't known.
+	FromColumn string `json:"fromColumn,omitempty"`
+	ToColumn   string `json:"toColumn,omitempty"`
 }
 
 // edgeKey uniquely identifies an edge for deduplication, ignoring
-// InCycle (which is derived, not part of the edge's identity).
+// InCycle (which is derived, not part of the edge's identity). FromColumn
+// is part of the key (loosened from v1, which deduplicated purely on
+// from/to/kind): two FK columns on the same table pointing at the same
+// target table now produce two distinct payload edges, one per source
+// column, so a column-level renderer can draw both. ToColumn is
+// deliberately not part of the key — DOT/Mermaid formatters re-collapse to
+// one object-level edge per (from,to,kind) regardless (see
+// dedupeObjectLevel), so this key only needs to distinguish what the JSON
+// payload itself must keep distinct.
 type edgeKey struct {
-	from, to, kind string
+	from, to, kind, fromColumn string
+}
+
+// nodePairKey identifies a (from, to) node pair, independent of edge kind
+// or column — used for SCC/cycle-membership lookups, which only care
+// about which nodes an edge connects.
+type nodePairKey struct {
+	from, to string
 }
 
 // Build constructs a Graph from loaded, the result of bundle.Load. It
@@ -97,44 +145,81 @@ func Build(loaded bundle.Loaded) Graph {
 		order = append(order, n.ID)
 	}
 
+	// firstStmtByName maps a defined name to the first (source-order)
+	// parsed statement that defines it, so table nodes can pull their
+	// column list from the statement's own Text/Tokens — bundle.Definition
+	// itself only carries position/kind/file, not the source text needed
+	// to re-scan the column list.
+	firstStmtByName := make(map[string]parse.Statement)
+	for _, st := range loaded.Statements() {
+		if st.Name == "" {
+			continue
+		}
+		if _, ok := firstStmtByName[st.Name]; !ok {
+			firstStmtByName[st.Name] = st
+		}
+	}
+
 	// Definitions become real nodes.
 	for _, name := range loaded.Symbols.DefinitionNames() {
 		def, ok := loaded.Symbols.FirstDefinition(name)
 		if !ok {
 			continue
 		}
+		var columns []Column
+		if def.Kind == parse.KindCreateTable {
+			if st, ok := firstStmtByName[name]; ok {
+				columns = exportColumns(fkrewrite.ExtractColumns(st.Text, st.Tokens))
+			}
+		}
 		addNode(Node{
-			ID:   name,
-			Kind: kindString(def.Kind),
-			File: def.File,
-			Line: def.Pos.Line,
-			Col:  def.Pos.Col,
+			ID:      name,
+			Kind:    kindString(def.Kind),
+			File:    def.File,
+			Line:    def.Pos.Line,
+			Col:     def.Pos.Col,
+			Columns: columns,
 		})
 	}
 
 	edgeSet := make(map[edgeKey]bool)
 	var edges []Edge
 
-	addEdge := func(from, to, kind string) {
-		key := edgeKey{from, to, kind}
+	addEdge := func(from, to, kind, fromColumn, toColumn string) {
+		key := edgeKey{from, to, kind, fromColumn}
 		if edgeSet[key] {
 			return
 		}
 		edgeSet[key] = true
 		edges = append(edges, Edge{
-			From:    from,
-			To:      to,
-			Kind:    kind,
-			InCycle: sccEdge[edgeKey{from, to, ""}],
+			From:       from,
+			To:         to,
+			Kind:       kind,
+			InCycle:    sccEdge[nodePairKey{from, to}],
+			FromColumn: fromColumn,
+			ToColumn:   toColumn,
 		})
 	}
 
+	// fkCols maps a "from" CREATE TABLE statement's FK target tables to
+	// the column-level pairings found on its own column list (see
+	// internal/fkrewrite via fkColumnPairs). This is consulted below
+	// instead of iterating classifyRefs' "fk" entries directly, because
+	// parse.Parse deduplicates DepRefs by target name (see
+	// parse.dedupeRefs): two distinct FK columns on the same table both
+	// targeting the same table collapse to a single DepRef, which would
+	// otherwise silently drop one of the two columns' edges. Iterating
+	// fkCols directly (one edge per pairing, however many that is)
+	// recovers the full column-level edge set regardless of that
+	// name-level dedup upstream.
 	for _, st := range loaded.Statements() {
 		from := st.Name
 		if from == "" {
 			continue
 		}
+		fkCols := fkColumnPairs(st.Kind, st.Text, st.Tokens)
 		refs := classifyRefs(st.Kind, from, st.DepRefs)
+		fkTargetsSeen := make(map[string]bool)
 		for _, cr := range refs {
 			if cr.name == from {
 				// Self-references never contribute an edge (matches
@@ -154,7 +239,25 @@ func Build(loaded bundle.Loaded) Graph {
 					addNode(Node{ID: cr.name, Kind: "unknown", External: true})
 				}
 			}
-			addEdge(from, cr.name, cr.kind)
+			if cr.kind == "fk" {
+				fkTargetsSeen[cr.name] = true
+				continue // one edge per pairing added below, not per ref
+			}
+			addEdge(from, cr.name, cr.kind, "", "")
+		}
+		for target := range fkTargetsSeen {
+			pairs := fkCols[target]
+			if len(pairs) == 0 {
+				// No column-level pairing resolved (shouldn't normally
+				// happen since classifyRefs's "fk" kind came from a
+				// REFERENCES clause fkColumnPairs should also have seen,
+				// but stay fail-soft): still emit a plain edge.
+				addEdge(from, target, "fk", "", "")
+				continue
+			}
+			for _, p := range pairs {
+				addEdge(from, target, "fk", p.from, p.to)
+			}
 		}
 	}
 
@@ -257,9 +360,10 @@ func kindString(k parse.Kind) string {
 // graph (same resolution rules as graph.SCCs/graph.Sort: a dependency
 // name not defined by any node is ignored, self-loops excluded) whether
 // both ends belong to the same (>1-member) strongly connected component.
-// Returned keys use an empty Kind field so callers can look up
-// edgeKey{from, to, ""} regardless of the edge's own Kind.
-func buildSCCEdgeSet(nodes []graph.Node) map[edgeKey]bool {
+// Returned keys are nodePairKey (from, to only), independent of edge kind
+// or column, so callers can look up nodePairKey{from, to} regardless of
+// the edge's own Kind/FromColumn.
+func buildSCCEdgeSet(nodes []graph.Node) map[nodePairKey]bool {
 	byName := make(map[string]int, len(nodes))
 	for i, n := range nodes {
 		if n.Name != "" {
@@ -274,7 +378,7 @@ func buildSCCEdgeSet(nodes []graph.Node) map[edgeKey]bool {
 		}
 	}
 
-	out := make(map[edgeKey]bool)
+	out := make(map[nodePairKey]bool)
 	for i, n := range nodes {
 		if n.Name == "" {
 			continue
@@ -287,7 +391,7 @@ func buildSCCEdgeSet(nodes []graph.Node) map[edgeKey]bool {
 			ci, hasI := sccOf[i]
 			cj, hasJ := sccOf[j]
 			if hasI && hasJ && ci == cj {
-				out[edgeKey{n.Name, dep, ""}] = true
+				out[nodePairKey{n.Name, dep}] = true
 			}
 		}
 	}

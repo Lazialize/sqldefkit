@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/Lazialize/sqldefkit/internal/bundle"
@@ -191,9 +192,44 @@ func TestBuild_UnbreakableCycleStillSucceeds(t *testing.T) {
 	}
 }
 
-// TestBuild_Dedup verifies that two occurrences of the same
-// (from, to, kind) triple collapse to a single edge.
+// TestBuild_Dedup verifies that two occurrences of the same (from, to,
+// kind) triple with the same source column collapse to a single edge —
+// the (from, to, kind, fromColumn) key still dedups. See
+// TestBuild_TwoFKColumnsToSameTargetProduceTwoEdges for the v2 case this
+// pins as no longer collapsing: two *different* FK columns on the same
+// table pointing at the same target now produce two distinct JSON edges.
 func TestBuild_Dedup(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "users.sql", `CREATE TABLE users (id int PRIMARY KEY);`)
+	// Two REFERENCES clauses on the very same column would be malformed
+	// SQL, so the same-key-dedups-to-one-edge case is instead exercised
+	// via a table-level FK naming the same column an inline clause
+	// already covers (a redundant but syntactically legal constraint).
+	writeFile(t, dir, "orders.sql", `CREATE TABLE orders (
+	id int PRIMARY KEY,
+	buyer_id int REFERENCES users(id),
+	FOREIGN KEY (buyer_id) REFERENCES users(id)
+);`)
+
+	g := Build(mustLoad(t, dir))
+
+	count := 0
+	for _, e := range g.Edges {
+		if e.From == "orders" && e.To == "users" && e.Kind == "fk" && e.FromColumn == "buyer_id" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("orders -> users (fk) edge count for fromColumn=buyer_id = %d, want 1", count)
+	}
+}
+
+// TestBuild_TwoFKColumnsToSameTargetProduceTwoEdges verifies the v2
+// dedup-loosening described in Graph's doc comment: two distinct FK
+// columns on the same table, targeting the same table, now produce two
+// separate JSON edges (one per source column) instead of collapsing to
+// one, so a column-level renderer can draw both.
+func TestBuild_TwoFKColumnsToSameTargetProduceTwoEdges(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "users.sql", `CREATE TABLE users (id int PRIMARY KEY);`)
 	writeFile(t, dir, "orders.sql", `CREATE TABLE orders (
@@ -204,15 +240,41 @@ func TestBuild_Dedup(t *testing.T) {
 
 	g := Build(mustLoad(t, dir))
 
-	count := 0
+	var fromCols []string
 	for _, e := range g.Edges {
 		if e.From == "orders" && e.To == "users" && e.Kind == "fk" {
-			count++
+			fromCols = append(fromCols, e.FromColumn)
 		}
 	}
-	if count != 1 {
-		t.Errorf("orders -> users (fk) edge count = %d, want 1", count)
+	if len(fromCols) != 2 {
+		t.Fatalf("orders -> users (fk) edge count = %d, want 2 (got fromColumns %v)", len(fromCols), fromCols)
 	}
+	sort.Strings(fromCols)
+	if fromCols[0] != "buyer_id" || fromCols[1] != "seller_id" {
+		t.Errorf("fromColumns = %v, want [buyer_id seller_id]", fromCols)
+	}
+
+	// DOT/Mermaid must still collapse this to a single object-level edge
+	// (see FormatDOT/FormatMermaid's dedupeObjectLevel).
+	dot := string(FormatDOT(g))
+	if n := countOccurrences(dot, `"orders" -> "users"`); n != 1 {
+		t.Errorf("FormatDOT: orders -> users edge line count = %d, want 1:\n%s", n, dot)
+	}
+	mermaid := string(FormatMermaid(g))
+	if n := countOccurrences(mermaid, "|fk|"); n != 1 {
+		t.Errorf("FormatMermaid: fk edge line count = %d, want 1:\n%s", n, mermaid)
+	}
+}
+
+func countOccurrences(s, substr string) int {
+	count := 0
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			count++
+			i += len(substr) - 1
+		}
+	}
+	return count
 }
 
 // TestBuild_Deterministic builds the same schema twice and checks the
@@ -244,5 +306,73 @@ func TestBuild_Deterministic(t *testing.T) {
 			t.Errorf("edges not sorted by (from,to,kind): %v", g1.Edges)
 			break
 		}
+	}
+}
+
+// TestBuild_ColumnsEndToEnd verifies Build populates Node.Columns for
+// table nodes (only) and Edge.FromColumn/ToColumn for fk edges, end to
+// end from a real schema tree.
+func TestBuild_ColumnsEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "users.sql", `CREATE TABLE users (
+	id int PRIMARY KEY,
+	email text UNIQUE
+);`)
+	writeFile(t, dir, "orders.sql", `CREATE TABLE orders (
+	id int PRIMARY KEY,
+	user_id int NOT NULL REFERENCES users (id)
+);`)
+	writeFile(t, dir, "views.sql", `CREATE VIEW v_orders AS SELECT * FROM orders;`)
+
+	g := Build(mustLoad(t, dir))
+
+	usersNode, ok := findNode(g, "users")
+	if !ok {
+		t.Fatal("missing users node")
+	}
+	if len(usersNode.Columns) != 2 {
+		t.Fatalf("users.Columns = %+v, want 2 columns", usersNode.Columns)
+	}
+	if usersNode.Columns[0].Name != "id" || !usersNode.Columns[0].PK {
+		t.Errorf("users.Columns[0] = %+v, want PK id", usersNode.Columns[0])
+	}
+	if usersNode.Columns[1].Name != "email" || !usersNode.Columns[1].Unique {
+		t.Errorf("users.Columns[1] = %+v, want unique email", usersNode.Columns[1])
+	}
+
+	ordersNode, ok := findNode(g, "orders")
+	if !ok {
+		t.Fatal("missing orders node")
+	}
+	userIDCol, ok := func() (Column, bool) {
+		for _, c := range ordersNode.Columns {
+			if c.Name == "user_id" {
+				return c, true
+			}
+		}
+		return Column{}, false
+	}()
+	if !ok {
+		t.Fatalf("orders.Columns missing user_id: %+v", ordersNode.Columns)
+	}
+	if !userIDCol.NotNull || userIDCol.FK == nil || userIDCol.FK.Table != "users" || userIDCol.FK.Column != "id" {
+		t.Errorf("orders.user_id column = %+v, want NotNull + FK{users,id}", userIDCol)
+	}
+
+	// A view node never gets a Columns list.
+	viewNode, ok := findNode(g, "v_orders")
+	if !ok {
+		t.Fatal("missing v_orders node")
+	}
+	if viewNode.Columns != nil {
+		t.Errorf("v_orders.Columns = %+v, want nil (not a table)", viewNode.Columns)
+	}
+
+	fkEdge, ok := findEdge(g, "orders", "users", "fk")
+	if !ok {
+		t.Fatal("missing orders -> users (fk) edge")
+	}
+	if fkEdge.FromColumn != "user_id" || fkEdge.ToColumn != "id" {
+		t.Errorf("orders -> users edge = %+v, want FromColumn=user_id ToColumn=id", fkEdge)
 	}
 }

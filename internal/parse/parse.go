@@ -85,6 +85,12 @@ type Statement struct {
 	// Source data carried through for bundling/diagnostics.
 	Text            string
 	LeadingComments []string
+	// Tokens is stmt.Tokens verbatim (comments included, positions
+	// relative to Text) — carried through so consumers that need to
+	// re-scan the statement's own token stream (e.g. internal/graphexport's
+	// column extraction, which reuses internal/fkrewrite's list-walking
+	// machinery) don't need a second lexer.Split call.
+	Tokens []lexer.Token
 }
 
 // normalizeToken folds a single identifier token's value the way
